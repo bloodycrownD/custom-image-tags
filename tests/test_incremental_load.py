@@ -15,7 +15,7 @@ def test_incremental_load_expands_embedding(tmp_path: Path) -> None:
     """resume 时 group 增加应扩展 Embedding 并保留旧权重。"""
     ckpt_path = tmp_path / "best.pth"
     old_map = GroupMap(groups={"author_a": 1, "author_b": 2}, authors={"author_a": 1, "author_b": 2})
-    model = PreferenceRanker(num_groups=2, embed_dim=8)
+    model = PreferenceRanker(num_groups=2, embed_dim=8, pretrained=False)
     old_weight = model.group_embed.weight.data.clone()
 
     save_checkpoint(ckpt_path, model, old_map, condition="train_group")
@@ -24,7 +24,7 @@ def test_incremental_load_expands_embedding(tmp_path: Path) -> None:
         groups={"author_a": 1, "author_b": 2, "author_c": 3},
         authors={"author_a": 1, "author_b": 2, "author_c": 3},
     )
-    loaded, merged_map, meta = load_checkpoint(ckpt_path, "cpu", group_map=new_map)
+    loaded, merged_map, meta = load_checkpoint(ckpt_path, "cpu", group_map=new_map, pretrained=False)
 
     assert loaded.num_groups >= 3
     assert "author_c" in merged_map.groups
@@ -41,10 +41,10 @@ def test_incremental_load_resume_training_loss_decreases(tmp_path: Path) -> None
 
     ckpt_path = tmp_path / "best.pth"
     group_map = GroupMap(groups={"a": 1}, authors={"a": 1})
-    model = PreferenceRanker(num_groups=1, embed_dim=8)
+    model = PreferenceRanker(num_groups=1, embed_dim=8, pretrained=False)
     save_checkpoint(ckpt_path, model, group_map)
 
-    loaded, _, _ = load_checkpoint(ckpt_path, "cpu")
+    loaded, _, _ = load_checkpoint(ckpt_path, "cpu", pretrained=False)
     set_backbone_trainable(loaded, False)
     for module in loaded.modules():
         if isinstance(module, torch.nn.Dropout):

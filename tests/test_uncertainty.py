@@ -10,7 +10,7 @@ from rank.predict import enable_mc_dropout
 
 def test_uncertainty_mc_std_positive() -> None:
     """MC Dropout 多次采样时 uncertainty（std）应大于 0。"""
-    model = PreferenceRanker(num_groups=2, embed_dim=8)
+    model = PreferenceRanker(num_groups=2, embed_dim=8, pretrained=False)
     enable_mc_dropout(model)
 
     image = torch.randn(1, 3, 64, 64)

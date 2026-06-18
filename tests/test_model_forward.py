@@ -9,7 +9,7 @@ from rank.model import PreferenceRanker
 
 def test_model_cross_author() -> None:
     """不同 group 索引的成对前向应正常返回 score_a/score_b。"""
-    model = PreferenceRanker(num_groups=4, embed_dim=16)
+    model = PreferenceRanker(num_groups=4, embed_dim=16, pretrained=False)
     model.eval()
 
     batch = 2
