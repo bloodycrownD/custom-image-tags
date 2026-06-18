@@ -15,19 +15,19 @@ class PreferenceRanker(nn.Module):
     Embedding index 0 表示 unknown。
     """
 
-    def __init__(self, num_groups: int, embed_dim: int = 64):
+    def __init__(self, num_groups: int, embed_dim: int = 64, *, pretrained: bool = True):
         """
         Args:
             num_groups: 已知组数量（不含 unknown；Embedding 大小为 num_groups + 1）。
             embed_dim: 条件 Embedding 维度。
+            pretrained: 是否加载 ImageNet 预训练骨干权重（测试时可设为 False 避免下载）。
         """
         super().__init__()
         self.num_groups = num_groups
         self.embed_dim = embed_dim
 
-        self.backbone = models.efficientnet_b4(
-            weights=models.EfficientNet_B4_Weights.DEFAULT
-        )
+        weights = models.EfficientNet_B4_Weights.DEFAULT if pretrained else None
+        self.backbone = models.efficientnet_b4(weights=weights)
         num_features = self.backbone.classifier[1].in_features
         self.backbone.classifier = nn.Identity()
 
