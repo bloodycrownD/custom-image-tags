@@ -12,15 +12,14 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from tools import load_json, pair_identity, save_json
+from tools import load_json, parse_scores_doc, pair_identity, save_json
 
 
 def load_scores(path: Path) -> list[dict[str, Any]]:
-    """读取 scores.json（列表格式）。"""
+    """读取 scores.json 中的 scores 列表（兼容旧版纯列表格式）。"""
     data = load_json(path)
-    if not isinstance(data, list):
-        raise ValueError("scores.json 应为对象列表")
-    return data
+    scores, _meta = parse_scores_doc(data)
+    return scores
 
 
 def load_existing_pair_keys(pairs_path: Path | None) -> set[tuple[str, str]]:

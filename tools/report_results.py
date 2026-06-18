@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,15 +12,13 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from tools import load_json, save_json
+from tools import load_json, parse_scores_doc, save_json
 
 
-def load_scores(path: Path) -> list[dict[str, Any]]:
-    """读取 scores.json。"""
+def load_scores(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """读取 scores.json，返回 (scores 列表, meta 字典)。"""
     data = load_json(path)
-    if not isinstance(data, list):
-        raise ValueError("scores.json 应为对象列表")
-    return data
+    return parse_scores_doc(data)
 
 
 def _percentile(values: list[float], pct: float) -> float:
@@ -43,18 +40,22 @@ def partition_report_zones(
     scores: list[dict[str, Any]],
     *,
     review_percentile: float = 75.0,
+    u_threshold: float | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """
     将 scores 划分为报告用集合。
 
     - extreme_low: score_0_100 <= 10
     - extreme_high: score_0_100 >= 90
-    - needs_review: 30 <= score_0_100 <= 70 且 uncertainty > P75
+    - needs_review: 30 <= score_0_100 <= 70 且 uncertainty > u_threshold
+
+    u_threshold 优先使用传入值（来自 scores.json meta）；未提供时回退为全库 uncertainty 分位。
 
     三集合互斥；其余条目归入 sorted 但不进入 needs_review。
     """
-    uncertainties = [float(item.get("uncertainty", 0.0)) for item in scores]
-    u_threshold = _percentile(uncertainties, review_percentile)
+    if u_threshold is None:
+        uncertainties = [float(item.get("uncertainty", 0.0)) for item in scores]
+        u_threshold = _percentile(uncertainties, review_percentile)
 
     extreme_low: list[dict[str, Any]] = []
     extreme_high: list[dict[str, Any]] = []
@@ -138,6 +139,7 @@ def write_report(
     out_dir: Path,
     *,
     review_percentile: float = 75.0,
+    u_threshold: float | None = None,
     data_root: Path | None = None,
 ) -> dict[str, Any]:
     """
@@ -153,7 +155,11 @@ def write_report(
         key=lambda x: float(x.get("score_0_100", 0.0)),
         reverse=True,
     )
-    partitions = partition_report_zones(scores, review_percentile=review_percentile)
+    partitions = partition_report_zones(
+        scores,
+        review_percentile=review_percentile,
+        u_threshold=u_threshold,
+    )
 
     save_json(out_dir / "sorted.json", sorted_scores)
     save_json(out_dir / "extreme_low.json", partitions["extreme_low"])
@@ -197,11 +203,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        scores = load_scores(args.scores)
+        scores, meta = load_scores(args.scores)
+        u_threshold = meta.get("u_threshold")
+        if u_threshold is not None:
+            u_threshold = float(u_threshold)
         summary = write_report(
             scores,
             args.out.resolve(),
             review_percentile=args.review_percentile,
+            u_threshold=u_threshold,
             data_root=args.data_root.resolve() if args.data_root else None,
         )
     except ValueError as exc:

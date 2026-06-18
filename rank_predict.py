@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -18,7 +17,7 @@ if str(_ROOT) not in sys.path:
 from rank.checkpoint import load_checkpoint
 from rank.predict import predict_batch
 from rank.transforms import KeepRatioResizePad
-from tools import iter_images_under, rel_posix_path
+from tools import iter_images_under, rel_posix_path, save_json
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -62,6 +61,7 @@ def run_predict(
     config: dict,
     n_mc: int | None,
     batch_size: int | None,
+    pretrained: bool = True,
 ) -> int:
     """执行批量推理并写入 scores.json。"""
     if not checkpoint_path.is_file():
@@ -79,9 +79,10 @@ def run_predict(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
 
-    model, group_map, meta = load_checkpoint(checkpoint_path, device)
+    model, group_map, meta = load_checkpoint(checkpoint_path, device, pretrained=pretrained)
     condition = meta.get("condition", config.get("condition", "train_group"))
     percentiles = meta.get("percentiles", {})
+    u_threshold = meta.get("u_threshold")
 
     items = list(iter_data_root_images(data_root))
     if not items:
@@ -103,7 +104,7 @@ def run_predict(
         percentiles=percentiles,
     )
 
-    payload = [
+    payload_scores = [
         {
             "path": item.path,
             "author": item.author,
@@ -116,12 +117,23 @@ def run_predict(
         for item in results
     ]
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    payload_meta: dict = {
+        "condition": condition,
+        "percentiles": percentiles,
+    }
+    if u_threshold is not None:
+        payload_meta["u_threshold"] = u_threshold
 
-    print(f"已写入 {out_path}: {len(payload)} 条评分")
+    payload = {
+        "version": 1,
+        "meta": payload_meta,
+        "scores": payload_scores,
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    save_json(out_path, payload)
+
+    print(f"已写入 {out_path}: {len(payload_scores)} 条评分")
     return 0
 
 
@@ -149,6 +161,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--n-mc", type=int, default=None, help="MC Dropout 采样次数")
     parser.add_argument("--batch-size", type=int, default=None, help="推理批大小")
+    parser.add_argument(
+        "--no-pretrained",
+        action="store_true",
+        help="不加载 ImageNet 预训练骨干（测试用，避免下载权重）",
+    )
     return parser
 
 
@@ -170,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         n_mc=args.n_mc,
         batch_size=args.batch_size,
+        pretrained=not args.no_pretrained,
     )
 
 

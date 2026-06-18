@@ -74,3 +74,27 @@ def pair_identity(image_a: str, image_b: str) -> tuple[str, str]:
 def empty_pairs_doc() -> dict[str, Any]:
     """构造空的 pairs.json 文档。"""
     return {"version": PAIRS_VERSION, "pairs": []}
+
+
+def parse_scores_doc(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    解析 scores.json 文档。
+
+    支持旧版纯列表格式与新版 ``{version, meta, scores}`` 格式。
+
+    Returns:
+        (scores 列表, meta 字典)。
+    """
+    if isinstance(data, list):
+        return data, {}
+    if isinstance(data, dict):
+        scores = data.get("scores")
+        if scores is None:
+            raise ValueError("scores.json 缺少 scores 字段")
+        if not isinstance(scores, list):
+            raise ValueError("scores.json 中 scores 字段应为列表")
+        meta = data.get("meta", {})
+        if not isinstance(meta, dict):
+            raise ValueError("scores.json 中 meta 字段应为对象")
+        return scores, meta
+    raise ValueError("scores.json 格式无效")
