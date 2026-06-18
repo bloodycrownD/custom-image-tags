@@ -12,6 +12,8 @@ if str(_ROOT) not in sys.path:
 
 from tools import iter_images_under, rel_posix_path, save_json
 
+RARE_GROUP_NAME = "__rare__"
+
 
 def build_train_group_map(
     data_root: Path,
@@ -37,6 +39,7 @@ def build_train_group_map(
 
     groups: dict[str, int] = {}
     authors: dict[str, int] = {}
+    images: dict[str, str] = {}
     next_idx = 1  # 0 保留给模型 unknown
 
     def ensure_group(name: str) -> int:
@@ -51,32 +54,37 @@ def build_train_group_map(
     normal_authors: list[tuple[str, Path, list[Path]]] = []
 
     for author_dir in author_dirs:
-        images = iter_images_under(author_dir)
-        if not images:
+        author_image_paths = iter_images_under(author_dir)
+        if not author_image_paths:
             continue
         author_id = author_dir.name
-        count = len(images)
+        count = len(author_image_paths)
         if count < min_images:
             rare_authors.append((author_id, author_dir))
         else:
-            normal_authors.append((author_id, author_dir, images))
+            normal_authors.append((author_id, author_dir, author_image_paths))
 
     if rare_authors:
-        rare_idx = ensure_group("__rare__")
-        for author_id, _ in rare_authors:
+        rare_idx = ensure_group(RARE_GROUP_NAME)
+        for author_id, author_dir in rare_authors:
             authors[author_id] = rare_idx
+            for img_path in iter_images_under(author_dir):
+                images[rel_posix_path(img_path, data_root)] = RARE_GROUP_NAME
 
-    for author_id, author_dir, images in normal_authors:
-        count = len(images)
+    for author_id, author_dir, author_images in normal_authors:
+        count = len(author_images)
         if count <= max_per_group:
             group_name = author_id
             idx = ensure_group(group_name)
             authors[author_id] = idx
+            for img_path in author_images:
+                images[rel_posix_path(img_path, data_root)] = group_name
         else:
             # 按文件名排序均分
             part_count = (count + max_per_group - 1) // max_per_group
             chunk_size = (count + part_count - 1) // part_count
             first_idx = None
+            rel_paths = [rel_posix_path(img_path, data_root) for img_path in author_images]
             for part_no in range(part_count):
                 start = part_no * chunk_size
                 end = min(start + chunk_size, count)
@@ -86,6 +94,8 @@ def build_train_group_map(
                 idx = ensure_group(group_name)
                 if first_idx is None:
                     first_idx = idx
+                for rel in rel_paths[start:end]:
+                    images[rel] = group_name
             authors[author_id] = first_idx if first_idx is not None else ensure_group(author_id)
 
     return {
@@ -97,6 +107,7 @@ def build_train_group_map(
         },
         "groups": groups,
         "authors": authors,
+        "images": images,
     }
 
 
