@@ -23,8 +23,8 @@ from rank.model import PreferenceRanker
 from rank.predict import predict_batch
 from rank.train import set_backbone_trainable, train_ranker
 from rank.transforms import KeepRatioResizePad
-from tools import iter_images_under, load_json, rel_posix_path, save_json
-from tools.build_groups import build_train_group_map, resolve_image_group
+from tools import load_json, save_json
+from tools.build_groups import build_train_group_map
 from tools.merge_pairs import merge_pairs_files
 from tools.validate_pairs import validate_pairs_doc
 
@@ -70,14 +70,7 @@ def build_group_map_from_data_root(
         min_images=min_images,
         max_per_group=max_per_group,
     )
-    images: dict[str, str] = {}
-    for author_dir in sorted(p for p in data_root.iterdir() if p.is_dir()):
-        for img_path in iter_images_under(author_dir):
-            rel = rel_posix_path(img_path, data_root)
-            group_name = resolve_image_group(rel, doc, data_root)
-            if group_name:
-                images[rel] = group_name
-    return GroupMap(doc["groups"], doc["authors"], images)
+    return GroupMap(doc["groups"], doc["authors"], doc.get("images"))
 
 
 def merge_training_pairs(
@@ -125,6 +118,72 @@ def split_train_val(
     generator = torch.Generator().manual_seed(seed)
     train_subset, val_subset = random_split(dataset, [train_size, val_size], generator=generator)
     return train_subset, val_subset
+
+
+def _percentile_value(values: list[float], pct: float) -> float:
+    """计算分位数（线性插值）。"""
+    if not values:
+        return 0.0
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    rank = (pct / 100.0) * (n - 1)
+    lo = int(rank)
+    hi = min(lo + 1, n - 1)
+    frac = rank - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def collect_val_images(val_subset: Subset, dataset: PairsDataset) -> list[tuple[str, str]]:
+    """从验证集 subset 收集去重后的 (相对路径, author) 列表。"""
+    seen: set[str] = set()
+    items: list[tuple[str, str]] = []
+    for idx in val_subset.indices:
+        pair = dataset.pairs[idx]
+        for key_path, key_author in (
+            ("image_a", "author_a"),
+            ("image_b", "author_b"),
+        ):
+            rel = pair.get(key_path, "")
+            author = pair.get(key_author, "")
+            if not isinstance(rel, str) or not rel or rel in seen:
+                continue
+            seen.add(rel)
+            items.append((rel, str(author)))
+    return items
+
+
+def compute_u_threshold(
+    model: PreferenceRanker,
+    val_items: list[tuple[str, str]],
+    data_root: Path,
+    group_map: GroupMap,
+    transform,
+    device: torch.device,
+    *,
+    condition: ConditionMode,
+    batch_size: int,
+    n_mc: int,
+    review_percentile: float,
+) -> float:
+    """在验证集图片上跑 MC Dropout，取 uncertainty 的指定分位作为 u_threshold。"""
+    if not val_items:
+        return 0.0
+
+    results = predict_batch(
+        model,
+        val_items,
+        data_root,
+        group_map,
+        transform,
+        device,
+        condition=condition,
+        batch_size=batch_size,
+        n_mc=max(n_mc, 2),
+    )
+    uncertainties = [r.uncertainty for r in results]
+    return _percentile_value(uncertainties, review_percentile)
 
 
 def collect_unique_images(pairs_path: Path) -> list[tuple[str, str]]:
@@ -192,10 +251,12 @@ def run_training(
     freeze_backbone_epochs: int | None,
     build_groups: bool,
     checkpoint_path: Path,
+    pretrained: bool = True,
 ) -> int:
     """执行完整训练流程。"""
     group_cfg = config.get("group", {})
     finetune_cfg = config.get("finetune", {})
+    uncertainty_cfg = config.get("uncertainty", {})
     condition: ConditionMode = config.get("condition", "train_group")
     img_size = int(config.get("img_size", 384))
     batch_size = int(config.get("batch_size", 16))
@@ -205,6 +266,8 @@ def run_training(
     val_ratio = float(config.get("val_ratio", 0.1))
     seed_pair_weight = float(config.get("seed_pair_weight", 0.5))
     train_on_new_only = bool(finetune_cfg.get("train_on_new_only", False))
+    n_mc = int(uncertainty_cfg.get("n_mc", 10))
+    review_percentile = float(uncertainty_cfg.get("review_percentile", 75))
 
     total_epochs = int(epochs if epochs is not None else config.get("epochs", 30))
     freeze_epochs = int(
@@ -241,7 +304,9 @@ def run_training(
     print(f"使用设备: {device}")
 
     if is_resume:
-        model, group_map, meta = load_checkpoint(resume_path, device, group_map=built_map)
+        model, group_map, meta = load_checkpoint(
+            resume_path, device, group_map=built_map, pretrained=pretrained
+        )
         condition = meta.get("condition", condition)  # type: ignore[assignment]
         print(f"已加载 checkpoint: {resume_path}")
     else:
@@ -249,7 +314,11 @@ def run_training(
             print("ERROR: 全量训练需要构建 train_group（默认已启用）", file=sys.stderr)
             return 2
         group_map = built_map
-        model = PreferenceRanker(num_groups=group_map.num_groups, embed_dim=embed_dim)
+        model = PreferenceRanker(
+            num_groups=group_map.num_groups,
+            embed_dim=embed_dim,
+            pretrained=pretrained,
+        )
         model.to(device)
 
     with tempfile.TemporaryDirectory(prefix="rank_train_") as tmp_dir:
@@ -369,7 +438,7 @@ def run_training(
                 condition=condition,
             )
 
-        model, group_map, meta = load_checkpoint(checkpoint_path, device)
+        model, group_map, meta = load_checkpoint(checkpoint_path, device, pretrained=pretrained)
         percentiles = compute_percentiles(
             model,
             merged_pairs,
@@ -380,16 +449,31 @@ def run_training(
             condition=condition,
             batch_size=batch_size,
         )
+        val_items = collect_val_images(val_subset, val_dataset)
+        u_threshold = compute_u_threshold(
+            model,
+            val_items,
+            data_root,
+            group_map,
+            build_transform(img_size, augment=False),
+            device,
+            condition=condition,
+            batch_size=batch_size,
+            n_mc=n_mc,
+            review_percentile=review_percentile,
+        )
         save_checkpoint(
             checkpoint_path,
             model,
             group_map,
             condition=condition,
             percentiles=percentiles,
-            extra={"percentile_source": "train_pairs"},
+            u_threshold=u_threshold,
+            extra={"percentile_source": "train_pairs", "u_threshold_source": "val_images"},
         )
-        print(f"已写入 checkpoint（含 percentiles）: {checkpoint_path}")
+        print(f"已写入 checkpoint（含 percentiles / u_threshold）: {checkpoint_path}")
         print(f"  p5={percentiles['p5']:.4f}, p95={percentiles['p95']:.4f}")
+        print(f"  u_threshold={u_threshold:.4f} (P{review_percentile:.0f} on val)")
 
     return 0
 
@@ -425,6 +509,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_CHECKPOINT,
         help="输出 checkpoint 路径（默认 models/rank/best.pth）",
+    )
+    parser.add_argument(
+        "--no-pretrained",
+        action="store_true",
+        help="不加载 ImageNet 预训练骨干（测试用，避免下载权重）",
     )
     return parser
 
@@ -462,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         freeze_backbone_epochs=args.freeze_backbone_epochs,
         build_groups=build_groups,
         checkpoint_path=args.checkpoint_out.resolve(),
+        pretrained=not args.no_pretrained,
     )
 
 

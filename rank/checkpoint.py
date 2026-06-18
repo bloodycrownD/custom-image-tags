@@ -18,6 +18,7 @@ def save_checkpoint(
     *,
     condition: ConditionMode = "train_group",
     percentiles: dict[str, float] | None = None,
+    u_threshold: float | None = None,
     epoch: int | None = None,
     val_loss: float | None = None,
     extra: dict[str, Any] | None = None,
@@ -31,6 +32,7 @@ def save_checkpoint(
         group_map: 训练时使用的组映射表。
         condition: 条件模式 train_group | author | none。
         percentiles: 分位数（如 p5、p95），用于 score_0_100 映射。
+        u_threshold: 验证集 uncertainty 分位阈值，用于待复核区判定。
         epoch: 当前 epoch。
         val_loss: 验证集 loss。
         extra: 附加字段。
@@ -44,6 +46,8 @@ def save_checkpoint(
     }
     if percentiles is not None:
         payload["percentiles"] = percentiles
+    if u_threshold is not None:
+        payload["u_threshold"] = u_threshold
     if epoch is not None:
         payload["epoch"] = epoch
     if val_loss is not None:
@@ -85,14 +89,18 @@ def load_checkpoint(
     device: torch.device | str = "cpu",
     *,
     group_map: GroupMap | None = None,
+    pretrained: bool = True,
 ) -> tuple[PreferenceRanker, GroupMap, dict[str, Any]]:
     """
     加载 checkpoint 并构建模型。
 
     若提供 group_map 且组数增加，则扩展 Embedding 并保留已有权重。
 
+    Args:
+        pretrained: 构建模型时是否下载 ImageNet 预训练骨干（加载后会覆盖权重）。
+
     Returns:
-        (model, group_map, metadata) — metadata 含 condition、percentiles 等。
+        (model, group_map, metadata) — metadata 含 condition、percentiles、u_threshold 等。
     """
     checkpoint = torch.load(path, map_location=device, weights_only=False)
 
@@ -115,7 +123,7 @@ def load_checkpoint(
     )
     num_groups = max(num_groups, 0)
 
-    model = PreferenceRanker(num_groups=num_groups, embed_dim=embed_dim)
+    model = PreferenceRanker(num_groups=num_groups, embed_dim=embed_dim, pretrained=pretrained)
     state_dict = checkpoint["state_dict"]
 
     old_num = checkpoint.get("num_groups", num_groups)
@@ -128,6 +136,7 @@ def load_checkpoint(
     metadata = {
         "condition": checkpoint.get("condition", "train_group"),
         "percentiles": checkpoint.get("percentiles", {}),
+        "u_threshold": checkpoint.get("u_threshold"),
         "epoch": checkpoint.get("epoch"),
         "val_loss": checkpoint.get("val_loss"),
     }
