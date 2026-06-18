@@ -1,0 +1,25 @@
+data_root: ""
+pairs_path: ""
+img_size: 384
+batch_size: 16
+embed_dim: 64
+lr: 5.0e-5
+lr_finetune: 1.0e-5
+weight_decay: 0.01
+epochs: 30
+early_stop_patience: 7
+val_ratio: 0.1
+group:
+  min_images: 5
+  max_per_group: 80
+condition: train_group
+seed_pair_weight: 0.5
+uncertainty:
+  n_mc: 10
+  review_percentile: 75
+active_learning:
+  budget: 200
+  score_close_threshold: 5.0
+finetune:
+  freeze_backbone_epochs: 2
+  train_on_new_only: false

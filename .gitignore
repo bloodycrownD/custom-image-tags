@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+models/rank/
+*.pth
+report/
+scores.json
+active_queue.json
+**/pairs.json
+**/pairs.*.json
+train_group_map.json
+.apm/_tmp_*.txt

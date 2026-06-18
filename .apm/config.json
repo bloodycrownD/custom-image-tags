@@ -1,0 +1,19 @@
+{
+  "limits": {
+    "role": {
+      "max": 100
+    },
+    "persist": {
+      "max": 800
+    },
+    "dynamicDetail": {
+      "max": 1500
+    },
+    "kbDynamicDetail": {
+      "max": 1000
+    }
+  },
+  "initializedAt": "2026-06-17 23:41:13",
+  "updatedAt": "2026-06-17 23:41:13",
+  "lastReadAt": null
+}
