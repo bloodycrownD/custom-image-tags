@@ -12,3 +12,4 @@ active_queue.json
 **/pairs.*.json
 train_group_map.json
 .apm/_tmp_*.txt
+_smoke_*/
