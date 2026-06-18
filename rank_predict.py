@@ -74,7 +74,10 @@ def run_predict(
     img_size = int(config.get("img_size", 384))
     batch_size = int(batch_size if batch_size is not None else config.get("batch_size", 16))
     uncertainty_cfg = config.get("uncertainty", {})
+    dl_cfg = config.get("dataloader", {})
     n_mc = int(n_mc if n_mc is not None else uncertainty_cfg.get("n_mc", 10))
+    num_workers = int(dl_cfg.get("num_workers", 4))
+    pin_memory = bool(dl_cfg.get("pin_memory", True))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
@@ -102,6 +105,8 @@ def run_predict(
         batch_size=batch_size,
         n_mc=n_mc,
         percentiles=percentiles,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     payload_scores = [

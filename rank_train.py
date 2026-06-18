@@ -10,18 +10,21 @@ from pathlib import Path
 import torch
 import torchvision.transforms as transforms
 import yaml
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import Subset, random_split
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from rank.checkpoint import load_checkpoint, save_checkpoint
+from rank.dataloader_utils import build_pairs_dataloader
 from rank.dataset import PairsDataset, pairs_collate_fn
 from rank.groups import ConditionMode, GroupMap
+from rank.image_cache import ImageTensorStore, collect_unique_paths_from_pairs
 from rank.model import PreferenceRanker
 from rank.predict import predict_batch
 from rank.train import set_backbone_trainable, train_ranker
+from rank.transforms import build_deterministic_transform
 from rank.transforms import KeepRatioResizePad
 from tools import load_json, save_json
 from tools.build_groups import build_train_group_map
@@ -40,7 +43,7 @@ def load_config(path: Path) -> dict:
 
 
 def build_transform(img_size: int, *, augment: bool = False):
-    """构建与 demo2 一致的图像变换流水线。"""
+    """构建图像变换（兼容旧调用；新代码优先用 PairsDataset 的 img_size/augment）。"""
     steps: list = [KeepRatioResizePad(img_size)]
     if augment:
         steps.extend(
@@ -56,6 +59,31 @@ def build_transform(img_size: int, *, augment: bool = False):
         ]
     )
     return transforms.Compose(steps)
+
+
+def maybe_build_tensor_store(
+    pairs: list,
+    data_root: Path,
+    img_size: int,
+    dl_cfg: dict,
+) -> ImageTensorStore | None:
+    """按配置预热张量缓存并放入共享内存。"""
+    if not bool(dl_cfg.get("cache_tensors", True)):
+        return None
+    if not bool(dl_cfg.get("warmup_cache", True)):
+        return None
+
+    paths = collect_unique_paths_from_pairs(pairs)
+    if not paths:
+        return None
+
+    transform = build_deterministic_transform(img_size)
+    store = ImageTensorStore()
+    count = store.build(paths, data_root, transform, desc="预热图片张量缓存")
+    store.share_memory()
+    nbytes_mb = store.nbytes / (1024 * 1024)
+    print(f"已预热张量缓存: {count} 张, 约 {nbytes_mb:.1f} MB")
+    return store
 
 
 def build_group_map_from_data_root(
@@ -268,6 +296,7 @@ def run_training(
     train_on_new_only = bool(finetune_cfg.get("train_on_new_only", False))
     n_mc = int(uncertainty_cfg.get("n_mc", 10))
     review_percentile = float(uncertainty_cfg.get("review_percentile", 75))
+    dl_cfg = config.get("dataloader", {})
 
     total_epochs = int(epochs if epochs is not None else config.get("epochs", 30))
     freeze_epochs = int(
@@ -346,16 +375,30 @@ def run_training(
             return 2
         print(f"训练 pairs: {stats.get('pairs_total', 0)} 条")
 
-        train_transform = build_transform(img_size, augment=True)
-        val_transform = build_transform(img_size, augment=False)
+        pairs_list = load_json(merged_pairs).get("pairs", [])
+        tensor_store = maybe_build_tensor_store(pairs_list, data_root, img_size, dl_cfg)
+        resize_pad_cache = bool(dl_cfg.get("resize_pad_cache", True))
+        tensor_augment_flip = bool(dl_cfg.get("tensor_augment_flip", True))
+        pin_memory = bool(dl_cfg.get("pin_memory", True)) and device.type == "cuda"
+
+        num_workers = int(dl_cfg.get("num_workers", 4))
+        if num_workers != 0:
+            print(
+                f"DataLoader: num_workers={num_workers}, pin_memory={pin_memory}, "
+                f"cache_tensors={tensor_store is not None}"
+            )
 
         full_dataset = PairsDataset(
             merged_pairs,
             data_root,
             group_map,
-            transform=train_transform,
             condition=condition,
             seed_pair_weight=seed_pair_weight,
+            img_size=img_size,
+            augment=True,
+            tensor_store=tensor_store,
+            tensor_augment_flip=tensor_augment_flip,
+            resize_pad_cache=resize_pad_cache and tensor_store is None,
         )
         train_subset, val_subset = split_train_val(full_dataset, val_ratio)
 
@@ -363,25 +406,28 @@ def run_training(
             merged_pairs,
             data_root,
             group_map,
-            transform=val_transform,
             condition=condition,
             seed_pair_weight=seed_pair_weight,
+            img_size=img_size,
+            augment=False,
+            tensor_store=tensor_store,
+            resize_pad_cache=False,
         )
         val_subset = Subset(val_dataset, val_subset.indices)
 
-        train_loader = DataLoader(
+        train_loader = build_pairs_dataloader(
             train_subset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=0,
             collate_fn=pairs_collate_fn,
+            dl_cfg=dl_cfg,
         )
-        val_loader = DataLoader(
+        val_loader = build_pairs_dataloader(
             val_subset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=0,
             collate_fn=pairs_collate_fn,
+            dl_cfg=dl_cfg,
         )
 
         checkpoint_dir = str(checkpoint_path.parent)
@@ -403,6 +449,7 @@ def run_training(
                 early_stop_patience=early_stop_patience,
                 condition=condition,
                 checkpoint_dir=checkpoint_dir,
+                pin_memory=pin_memory,
             )
             remaining_epochs -= result.epochs_run
             if remaining_epochs <= 0:
@@ -424,6 +471,7 @@ def run_training(
                 early_stop_patience=early_stop_patience,
                 condition=condition,
                 checkpoint_dir=checkpoint_dir,
+                pin_memory=pin_memory,
             )
             print(
                 f"训练完成: best_val_loss={result.best_val_loss:.4f}, "
@@ -444,7 +492,7 @@ def run_training(
             merged_pairs,
             data_root,
             group_map,
-            build_transform(img_size, augment=False),
+            build_deterministic_transform(img_size),
             device,
             condition=condition,
             batch_size=batch_size,
@@ -455,7 +503,7 @@ def run_training(
             val_items,
             data_root,
             group_map,
-            build_transform(img_size, augment=False),
+            build_deterministic_transform(img_size),
             device,
             condition=condition,
             batch_size=batch_size,

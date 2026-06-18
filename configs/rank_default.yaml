@@ -23,3 +23,12 @@ active_learning:
 finetune:
   freeze_backbone_epochs: 2
   train_on_new_only: false
+dataloader:
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  cache_tensors: true
+  warmup_cache: true
+  tensor_augment_flip: true
+  resize_pad_cache: true

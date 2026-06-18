@@ -111,6 +111,7 @@ def predict_batch(
     n_mc: int = 1,
     percentiles: dict[str, float] | None = None,
     num_workers: int = 0,
+    pin_memory: bool = False,
 ) -> list[PredictItem]:
     """
     批量推理，支持 MC Dropout 不确定性（n_mc > 1）。
@@ -132,13 +133,17 @@ def predict_batch(
         transform,
         condition,
     )
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        collate_fn=_collate_predict,
-    )
+    loader_kwargs: dict = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "collate_fn": _collate_predict,
+        "pin_memory": pin_memory and device.type == "cuda",
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+    loader = DataLoader(dataset, **loader_kwargs)
 
     if n_mc > 1:
         enable_mc_dropout(model)
@@ -146,10 +151,11 @@ def predict_batch(
         model.eval()
 
     results: list[PredictItem] = []
+    non_blocking = pin_memory and device.type == "cuda"
 
     for batch in tqdm(loader, desc="Predict"):
-        images = batch["image"].to(device)
-        group_ids = batch["group_id"].to(device)
+        images = batch["image"].to(device, non_blocking=non_blocking)
+        group_ids = batch["group_id"].to(device, non_blocking=non_blocking)
 
         if n_mc > 1:
             mc_scores: list[torch.Tensor] = []
