@@ -19,7 +19,9 @@ assistant:
   4. GPU 约束：RTX 2080 Ti 22GB（Turing，无 bf16，用 fp16 AMP）。EVA02-L@448 全微调偏重（batch 4-8+梯度累积+grad checkpointing 可行）；Camie v2 143M@512 更从容。
 - GPL-3.0 结论：纯私用（训练/推理/管图库）零义务——GPL 义务仅在"对外分发/convey"时触发，且 GPL-3.0（非 AGPL）连对外提供网络服务都不触发源码义务。唯一红线：将来若公开 camie 衍生的微调权重/模型，需按 GPL-3.0 开源发布；届时选 WD（Apache-2.0）线发布即可。本项目权重均在 gitignore（*.pth/*.safetensors/*.onnx/data/pretrained/），仓库不会误分发。
 - 已完成下载（走代理，已校验文件头为合法 safetensors）：wd-eva02-large-tagger-v3（model.safetensors 1.26GB + selected_tags.csv + config，config 确认 architecture=eva02_large_patch14_448、10861 类、mean/std=0.5，可 timm 直载）与 camie-tagger-v2（safetensors 572MB + metadata + config，架构代码需从其 app/utils 取）至 data/pretrained/。
-- 环境待办：系统 python3 无 torch/timm/huggingface_hub，仓库内无 .venv、conda 不可用——训练环境需后续确认或重建。
+- 环境已解决：新建 conda env `classify`（python 3.10，torch 2.14.0+cu130 CUDA 可用于 2080 Ti，timm 1.0.29）。踩坑记录：PyPI 官方源走代理仅 ~100KB/s，改清华镜像直连 ~10MB/s；HF 才需要走 clash 代理。
+- 首批代码已落地（commit 3c2ad9c，feature/multi-label-tags）：tags/preprocess.py（alpha 白底合成/白 pad-to-square/bicubic/0.5 归一化/坏图白占位）、tags/model.py（timm 骨干 num_classes=0 + dropout + 线性头；mc_forward 只切 Dropout 不切 BN；load_wd_pretrained 过滤原始头键并 strict 校验）、tools/verify_wd_load.py（真实权重验证：仅丢弃 head.weight/bias 两键，骨干 1024 维特征 std=4.1 非退化，CPU 前向 8.5s）。单测 8 项全过（tests/test_tags_preprocess.py、test_tags_model.py，用 resnet18 小骨干避免下载）。RULE.md 已更新持久约定。下一步：tag 词表 v1 起草供用户审 → TagsDataset + 目录标签冷启动 → 训练循环（BCE+pos_weight+两阶段）。
+- 候选策略微调：原计划"EVA02-L 主线"更新为"两候选并测"——camie v2（更强、更省显存、但 GPL 与自定义架构加载）vs wd-eva02-large（timm 直载、Apache、生态最成熟）；同验证集比 per-tag mAP/F1 拍板。样本硬盘接上后即可冷启动。
 - v4-seed 确认为**数据集**而非模型（SmilingWolf/wdtagger-v4-seed，2025-04-24 公开，parquet train/val/test/rejected 划分），v4 权重未发布。
 - 预处理对比（读 WD 官方 space app.py vs 本仓库 rank/transforms.py）：
   - WD 官方管线：①alpha_composite 到白底（Image.new RGBA (255,255,255)）→ 透明区域变白；②pad-to-square 用白色(255,255,255)居中；③bicubic 缩放到 448；④timm 版 mean/std=0.5、RGB（ONNX 版是 0-255 BGR，归一化烘焙进图）。无裁剪（crop_pct=1.0）。
