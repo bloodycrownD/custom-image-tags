@@ -14,3 +14,6 @@ train_group_map.json
 .apm/_tmp_*.txt
 _smoke_*/
 data/classification/
+data/pretrained/
+*.safetensors
+*.onnx
