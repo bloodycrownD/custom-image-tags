@@ -1,6 +1,9 @@
 torch>=2.0
 torchvision>=0.15
+timm>=1.0
+safetensors>=0.4
 Pillow>=9.0
 tqdm>=4.65
 PyYAML>=6.0
+pandas>=2.0
 pytest>=7.0
