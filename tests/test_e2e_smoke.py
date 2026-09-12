@@ -47,6 +47,12 @@ def _write_test_config(config_path: Path, data_root: Path) -> dict:
         "uncertainty": {"n_mc": 3, "review_percentile": 75},
         "active_learning": {"budget": 10, "score_close_threshold": 5.0},
         "finetune": {"freeze_backbone_epochs": 0, "train_on_new_only": False},
+        "dataloader": {
+            "num_workers": 0,
+            "cache_tensors": True,
+            "warmup_cache": True,
+            "pin_memory": False,
+        },
     }
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
     return config

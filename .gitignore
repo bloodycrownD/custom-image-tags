@@ -13,3 +13,4 @@ active_queue.json
 train_group_map.json
 .apm/_tmp_*.txt
 _smoke_*/
+data/classification/

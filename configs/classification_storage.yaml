@@ -1,9 +1,13 @@
-data_root: ""
-pairs_path: ""
+# /media/bloodycrown/我的硬盘/Pictures/Storage/classification 冷启动训练配置
+# 仅读取图片，所有产物写入 classify 仓库 data/classification/
+
+data_root: "/media/bloodycrown/我的硬盘/Pictures/Storage/classification"
+pairs_path: "data/classification/pairs.seed.json"
+
 img_size: 384
-batch_size: 8
+batch_size: 32
 embed_dim: 64
-lr: 4.0e-5
+lr: 8.0e-5
 lr_finetune: 1.0e-5
 weight_decay: 0.01
 epochs: 30
@@ -24,11 +28,12 @@ finetune:
   freeze_backbone_epochs: 2
   train_on_new_only: false
 dataloader:
-  num_workers: 4
+  num_workers: 8
   pin_memory: true
   persistent_workers: true
-  prefetch_factor: 2
+  prefetch_factor: 4
+  # 训练集唯一图约 1.2 万张，float16 张量缓存约 10GB RAM（不写本机磁盘）
   cache_tensors: true
   warmup_cache: true
   tensor_augment_flip: true
-  resize_pad_cache: true
+  resize_pad_cache: false

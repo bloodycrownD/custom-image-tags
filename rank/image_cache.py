@@ -63,7 +63,7 @@ class ImageTensorStore:
         if self._storage is None or rel_path not in self._path_to_idx:
             raise KeyError(f"图片不在缓存中: {rel_path}")
         idx = self._path_to_idx[rel_path]
-        return self._storage[idx].clone()
+        return self._storage[idx].float().clone()
 
     def build(
         self,
@@ -87,24 +87,30 @@ class ImageTensorStore:
             self._storage = None
             return 0
 
-        tensors: list[torch.Tensor] = []
         path_to_idx: dict[str, int] = {}
+        storage: torch.Tensor | None = None
 
         iterator: Iterable[str] = unique_paths
         if show_progress:
             iterator = tqdm(unique_paths, desc=desc, unit="img")
 
-        for rel_path in iterator:
+        for i, rel_path in enumerate(iterator):
             pil = _load_rgb_image(data_root, rel_path)
             tensor = transform(pil)
             if not isinstance(tensor, torch.Tensor):
                 raise TypeError("transform 须返回 torch.Tensor")
-            path_to_idx[rel_path] = len(tensors)
-            tensors.append(tensor.contiguous())
+            tensor = tensor.contiguous()
+            if storage is None:
+                storage = torch.empty(
+                    (len(unique_paths),) + tensor.shape,
+                    dtype=torch.float16,
+                )
+            storage[i] = tensor.half()
+            path_to_idx[rel_path] = i
 
         self._path_to_idx = path_to_idx
-        self._storage = torch.stack(tensors, dim=0)
-        return len(tensors)
+        self._storage = storage
+        return len(unique_paths)
 
     def share_memory(self) -> ImageTensorStore:
         """将底层 Tensor 放入共享内存，供 DataLoader worker 读取。"""

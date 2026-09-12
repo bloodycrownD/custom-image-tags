@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import random
 import sys
 from pathlib import Path
 
@@ -118,6 +119,16 @@ def generate_seed_pairs(data_root: Path) -> list[dict]:
     return pairs
 
 
+def subsample_pairs(pairs: list[dict], max_pairs: int, *, seed: int = 42) -> list[dict]:
+    """随机下采样 pair 列表（固定种子可复现）。"""
+    if max_pairs <= 0:
+        raise ValueError("max_pairs 必须 > 0")
+    if len(pairs) <= max_pairs:
+        return pairs
+    rng = random.Random(seed)
+    return rng.sample(pairs, max_pairs)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。"""
     parser = argparse.ArgumentParser(description="从 good/keep/trash 生成种子 pairs.json")
@@ -128,6 +139,18 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("pairs_seed.json"),
         help="输出 pairs.json 路径",
     )
+    parser.add_argument(
+        "--max-pairs",
+        type=int,
+        default=None,
+        help="随机下采样上限（全量跨标签组合可能达百万级，冷启动建议 1~2 万）",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="下采样随机种子",
+    )
     args = parser.parse_args(argv)
 
     data_root = args.data_root.resolve()
@@ -136,6 +159,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     pairs = generate_seed_pairs(data_root)
+    total = len(pairs)
+    if args.max_pairs is not None:
+        pairs = subsample_pairs(pairs, args.max_pairs, seed=args.seed)
+        print(f"下采样: {total} -> {len(pairs)} 条（seed={args.seed}）")
     doc = empty_pairs_doc()
     doc["version"] = PAIRS_VERSION
     doc["pairs"] = pairs

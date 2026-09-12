@@ -330,6 +330,8 @@ def run_training(
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
     print(f"使用设备: {device}")
 
     if is_resume:
