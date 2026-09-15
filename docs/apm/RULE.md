@@ -10,6 +10,7 @@
 - 2026-09-12：tag 方案在 feature/multi-label-tags 分支开发，代码落 tags/ 包；v1 词表不含作者组（作者 base rate 走两段式先验融合，作者预测/画风相似留待 v2）。
 
 ## 约定
+- 远程仓库：origin = https://github.com/bloodycrownD/custom-image-tags.git（跨机开发，推送需走代理）。
 - 数据目录只读，所有产物写入 classify 仓库 data/ 下。
 - 打分输出协议以 checkpoint meta 为准（percentiles / u_threshold 等），工具读取而非重算。
 - tag 预处理对齐基模官方管线（WD：alpha 白底合成、白色 pad-to-square、bicubic、448px、mean/std 0.5）；rank 的黑填充 + ImageNet 归一化仅服务于 EfficientNet-B4，两套互不通用。
