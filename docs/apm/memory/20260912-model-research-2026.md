@@ -27,4 +27,14 @@ assistant:
   - WD 官方管线：①alpha_composite 到白底（Image.new RGBA (255,255,255)）→ 透明区域变白；②pad-to-square 用白色(255,255,255)居中；③bicubic 缩放到 448；④timm 版 mean/std=0.5、RGB（ONNX 版是 0-255 BGR，归一化烘焙进图）。无裁剪（crop_pct=1.0）。
   - rank 现状：KeepRatioResizePad 等比缩放+**黑色填充**(fill=0)、bilinear、ImageNet mean/std、.convert("RGB") 使透明 PNG 变**黑底**、384px。
   - 结论：tag 分支必须改用 WD 官方预处理（白底合成 alpha、白填充、bicubic、448、mean/std 0.5）——预处理与预训练分布一致是迁移学习纪律；黑边对 WD-init 是分布外输入，且 anime 图库透明 PNG 常见，透明→黑 vs 透明→白是实打实的域差异。KeepRatioResizePad 骨架可复用，参数化 fill=255+alpha 白底合成+改 bicubic 即可；rank 分支保持原样不演进（已冻结）。Camie v2 用 512px，预处理同样以其官方代码为准（接入时核对）。
-- 候选策略微调：原计划"EVA02-L 主线"更新为"两候选并测"——camie v2（更强、更省显存、但 GPL 与自定义架构加载）vs wd-eva02-large（timm 直载、Apache、生态最成熟）；同验证集比 per-tag mAP/F1 拍板。样本硬盘接上后即可冷启动。
+
+user:
+（2026-09-12 晚）样本盘仍未挂载；过节回家，改用 4070Ti Laptop 8GB 显存训练，服务器不可用。
+
+assistant:
+8GB 约束下的训练方案排序（不推翻架构，只调整实施顺序）：
+- v0 首选"冻结骨干 + 预计算特征"：EVA02-L 前向一遍提特征（453 张，fp16 batch 4-8 轻松放进 8GB，CPU 也行），头在 1024 维特征上训练，秒级/epoch——与既定"冻结骨干先训头"完全一致，8GB 无压力。
+- 若需轻量微调：解冻最后 1-2 个 block，fp16 AMP + batch 2-4 + 梯度累积 + 梯度检查点，8GB 可行但紧；EVA02-L 全参微调（AdamW fp32 状态约 4.8GB）留回服务器做。
+- Camie v2（143M@512）在 8GB 上微调更从容，可作为假期机器上的骨干候选。
+- 4070Ti Laptop 为 Ada 架构，torch cu13x 直接支持；笔记本需按 RULE.md 建 classify 环境（清华镜像装依赖）+ 从 GitHub 克隆 + data/pretrained 权重需重新下载（gitignore 不随仓库走）。
+- 同日交付：TagSpaces 文件名标签解析落地（tags/vocab.py 词表、tags/filename_tags.py 解析器、tools/scan_tagspaces.py 扫描器，10 项单测过）——只认结尾方括号组+词表内标签，防动漫文件名原生方括号误判；未知结尾标签上报为疑似拼写错误。

@@ -12,6 +12,7 @@
 ## 约定
 - 远程仓库：origin = git@github.com:bloodycrownD/custom-image-tags.git（SSH 关联，跨机开发；本机 SSH 22 端口直连可用，无需代理）。
 - 数据目录只读，所有产物写入 classify 仓库 data/ 下。
+- 人工标注用 TagSpaces：标签写在文件名结尾的方括号组（`图 [灵魂] [NSFW].png`），无 sidecar 文件；训练数据用 tools/scan_tagspaces.py 扫描生成 labels.json，词表见 tags/vocab.py。
 - 打分输出协议以 checkpoint meta 为准（percentiles / u_threshold 等），工具读取而非重算。
 - tag 预处理对齐基模官方管线（WD：alpha 白底合成、白色 pad-to-square、bicubic、448px、mean/std 0.5）；rank 的黑填充 + ImageNet 归一化仅服务于 EfficientNet-B4，两套互不通用。
 - 训练环境：~/miniconda3/envs/classify（torch cu13 + timm）。网络：PyPI 走清华镜像直连，HuggingFace 走 clash 代理 127.0.0.1:7890（直连被墙）。
