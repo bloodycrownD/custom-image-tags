@@ -2,7 +2,7 @@
 date: 2026-09-20 23:55
 title: 敏捷迭代 v0-tags-training 完成：v0 训练管线落地并真实数据验收通过
 keywords: v0, 训练管线, TagsDataset, 敏捷开发, 解析器, labels.json, 冻结骨干, mAP
-abstract: feature/v0-tags-training 分支（迭代 multi-label-tags）完成 v0 训练管线：解析器空格分隔修复（trivial 豁免）+ TagsDataset/特征预计算/头训练/checkpoint/CLI（实现子代理，3 提交）。真实数据验收：453 张全解析且计数与基准逐项一致；端到端训练跑通（train 385/val 68，特征提取 4 分 35 秒，44 轮早停，val mAP=0.634——无背景/一般/漫画图/NSFW/删除 0.89~0.95 强，小样本档低属预期）。prd/spec 落 docs/iterations/multi-label-tags/features/v0-tags-training/。待用户确认后合回 main。遗留：MC dropout 同图同种子协议打分入口未实现。
+abstract: v0 训练管线已完成并合并 main（6b132a0，fast-forward，分支已删）：解析器空格分隔修复 + TagsDataset/特征预计算/头训练/checkpoint/CLI。真实数据验收：453 张全解析计数对基准；端到端训练 val mAP=0.634（强 tag 0.89~0.95，小样本档低属预期）。prd/spec 落 docs/iterations/multi-label-tags/features/v0-tags-training/。遗留到下个敏捷项：全库打分/预填入口（需补 MC dropout 同图同种子）、阈值校准、增量重训、伪标签铺负面组。
 ---
 
 user:
@@ -16,5 +16,5 @@ assistant:
 - Step3b 实现子代理（29435fc/7e76a05/2c65ad5）：tags/dataset.py（multi-hot+按喜好分层划分）、tags/features.py（预计算+缓存+坏图统计）、tags/train.py（AdamW+Plateau+早停、手写 AP、checkpoint 存取 weights_only 兼容）、tags_train.py CLI、configs/tags_v0.yaml、tests/test_tags_dataset.py + test_tags_train_smoke.py（resnet18 离线）。
 - Step4 验收（主代理复核）：定向 25 + 全量 52 测试全绿；真实训练端到端通过——train 385/val 68（分层 seed42），EVA02-L 特征提取 4 分 35 秒（缓存 (453,1024) fp16），头训练 44/100 轮早停 best_val_loss=0.6828，val mAP=0.634（无背景 0.951/一般 0.943/漫画图 0.938/NSFW 0.892/删除 0.888；喜欢 0.429、小水印 0.301、灵魂 0.186（支持4）、低像素 0.183（支持2）为排序辅助档，低属预期）；checkpoint 可加载重建，头前向 (2,9) 有限值。
 - Step5 留痕：docs/iterations/multi-label-tags/features/v0-tags-training/{prd,spec}.md（含真实提交清单与训练数字）。
-- Step6 待用户确认后合并 main 删分支。产物（gitignored）：models/tags/v0_best.pth、data/classification/tags_v0_report.json、tags_v0_features.pt、tags.labels.json。
+- Step6 用户确认后已 fast-forward 合并 main（6b132a0）并删除 feature 分支（本地+远端），敏捷项关闭。产物（gitignored）：models/tags/v0_best.pth、data/classification/tags_v0_report.json、tags_v0_features.pt、tags.labels.json。
 - 遗留到下个敏捷项：全库打分/预填入口（需补 MC dropout 同图同种子协议）、阈值校准（≥50 正样本后）、增量重训、伪标签铺负面组候选。

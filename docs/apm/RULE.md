@@ -18,3 +18,4 @@
 - tag 预处理对齐基模官方管线（WD：alpha 白底合成、白色 pad-to-square、bicubic、448px、mean/std 0.5）；rank 的黑填充 + ImageNet 归一化仅服务于 EfficientNet-B4，两套互不通用。
 - 训练环境：~/miniconda3/envs/classify（torch cu13 + timm）。网络：PyPI 走清华镜像直连，HuggingFace 走 clash 代理 127.0.0.1:7890（直连被墙）。
 - 预训练基模权重放 data/pretrained/（gitignore），不进版本库。
+- v0 训练入口：`python tags_train.py --config configs/tags_v0.yaml`（冻结骨干特征预计算 + 线性头 BCE）；checkpoint models/tags/v0_best.pth 的 meta（tag_list/pos_weight/img_size 等）是打分协议的事实来源，工具读取而非重算。
