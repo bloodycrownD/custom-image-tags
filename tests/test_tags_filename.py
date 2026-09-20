@@ -18,6 +18,25 @@ def test_comma_separated_inside_group():
     assert cands == ["喜欢", "漫画图"]
 
 
+def test_space_separated_inside_group():
+    """TagSpaces 默认写盘格式：单方括号组内空格分隔多标签。"""
+    stem, cands = parse_stem_tags("2398_126599139_p0[无背景 一般]")
+    assert stem == "2398_126599139_p0"
+    assert cands == ["无背景", "一般"]
+
+
+def test_space_separated_three_tags_real_world_shape():
+    r = parse_filename("x_118880212_p0[无背景 一般 小水印].jpg")
+    assert r["tags"] == ["无背景", "一般", "小水印"]
+    assert r["unknown_tags"] == []
+    assert r["preference_count"] == 1
+
+
+def test_mixed_separators_inside_group():
+    _, cands = parse_stem_tags("x [低像素 一般, NSFW]")
+    assert cands == ["低像素", "一般", "NSFW"]
+
+
 def test_fullwidth_comma():
     _, cands = parse_stem_tags("x [小水印，低像素]")
     assert cands == ["小水印", "低像素"]

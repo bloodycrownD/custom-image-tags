@@ -1,6 +1,8 @@
 """解析 TagSpaces 文件名标签协议。
 
-TagSpaces 将标签追加在文件名末尾的方括号组中，如：
+TagSpaces 将标签追加在文件名末尾的方括号组中，多标签的默认写盘格式为
+单方括号组内空格分隔，逗号（半角/全角）亦接受：
+    2398_126599139_p0[无背景 一般].png
     图 [灵魂] [NSFW].png
     [作者] 标题 (C98) [喜欢, 漫画图].jpg
 
@@ -18,8 +20,9 @@ from tags.vocab import PREFERENCE_SET, canonical_tag
 
 # 结尾连续方括号组
 _TRAILING_GROUPS_RE = re.compile(r"((?:\s*\[[^\[\]]+\])+)\s*$")
-# 组内多个标签可用半角/全角逗号分隔
-_SPLIT_RE = re.compile(r"[,，]")
+# 组内多标签分隔符：空格（TagSpaces 默认写盘）与半角/全角逗号。
+# 词表标签均为无空白单 token，按空白拆分安全。
+_SPLIT_RE = re.compile(r"[\s,，]+")
 
 
 def parse_stem_tags(stem: str) -> tuple[str, list[str]]:
