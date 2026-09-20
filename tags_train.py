@@ -97,6 +97,10 @@ def run_tags_training(
     num_workers = int(dl_cfg.get("num_workers", 0))
     if feature_cache is None:
         feature_cache = config.get("feature_cache") or None
+    # [tags/B-1] backbone_weights 与 feature_cache 对称：CLI 未传时回退 config 字段，
+    # 避免默认入口静默以随机骨干训练
+    if backbone_weights is None:
+        backbone_weights = config.get("backbone_weights") or None
 
     if labels_path is None:
         labels_path = Path(config.get("labels_path", "data/classification/tags.labels.json"))
@@ -145,6 +149,9 @@ def run_tags_training(
             return 2
         dropped = load_wd_pretrained(model, backbone_weights)
         print(f"已加载骨干权重: {backbone_weights}（丢弃原始头键 {len(dropped)} 个）")
+    else:
+        # [tags/B-1] 显式警告，避免随机骨干训练产物只能事后从 meta 识别
+        print("警告: 未加载骨干权重，使用随机骨干")
     model.to(dev)
 
     features = precompute_features(

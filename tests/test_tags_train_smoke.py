@@ -192,3 +192,69 @@ def test_compute_tag_metrics_ranking_only_flag() -> None:
     assert metrics["tag_a"]["f1_at_050"] == 1.0
     # tag_b 概率全在 0.5 之上：pred 全正 → precision=1/3, recall=1 → F1=0.5
     assert metrics["tag_b"]["f1_at_050"] == 0.5
+
+
+def test_backbone_weights_fallback_to_config(monkeypatch, tmp_path: Path, capsys) -> None:
+    """[tags/B-1] CLI 未传 backbone_weights 时回退 config 字段并加载；报告记录路径。"""
+    import tags_train
+
+    calls: list[Path] = []
+
+    def _fake_load(model, weights_path):
+        calls.append(Path(weights_path))
+        return {"head.weight", "head.bias"}
+
+    monkeypatch.setattr(tags_train, "load_wd_pretrained", _fake_load)
+    weights = tmp_path / "fake.safetensors"
+    weights.write_bytes(b"")  # 只需存在，加载逻辑已 mock
+
+    data_root = tmp_path / "data"
+    data_root.mkdir(exist_ok=True)
+    images = _build_dataset(data_root)
+    labels_path = _write_labels(tmp_path / "labels.json", images, data_root)
+    config = _make_config()
+    config["backbone_weights"] = str(weights)  # config 指定权重，CLI 传 None
+
+    rc = run_tags_training(
+        config,
+        labels_path=labels_path,
+        data_root=data_root,
+        checkpoint_path=tmp_path / "m" / "best.pth",
+        report_path=tmp_path / "report.json",
+        arch=ARCH,
+        img_size=IMG_SIZE,
+        epochs=1,
+        feature_cache=tmp_path / "features.pt",
+        backbone_weights=None,
+        device="cpu",
+    )
+    assert rc == 0
+    assert calls == [weights]  # 权重确实被加载（而非静默随机骨干）
+    out = capsys.readouterr().out
+    assert "已加载骨干权重" in out and str(weights) in out
+    assert "随机骨干" not in out
+    report = load_json(tmp_path / "report.json")
+    assert report["backbone_weights"] == str(weights)
+
+
+def test_random_backbone_warning_when_no_weights(tmp_path: Path, capsys) -> None:
+    """[tags/B-1] config 与 CLI 均未提供权重时，显式打印随机骨干警告。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir(exist_ok=True)
+    images = _build_dataset(data_root)
+    labels_path = _write_labels(tmp_path / "labels.json", images, data_root)
+    rc = run_tags_training(
+        _make_config(),  # config 不含 backbone_weights
+        labels_path=labels_path,
+        data_root=data_root,
+        checkpoint_path=tmp_path / "m" / "best.pth",
+        report_path=tmp_path / "report.json",
+        arch=ARCH,
+        img_size=IMG_SIZE,
+        epochs=1,
+        feature_cache=tmp_path / "features.pt",
+        backbone_weights=None,
+        device="cpu",
+    )
+    assert rc == 0
+    assert "警告: 未加载骨干权重，使用随机骨干" in capsys.readouterr().out

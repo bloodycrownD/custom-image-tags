@@ -51,9 +51,12 @@ class TagsDataset(Dataset):
         if not isinstance(images, list):
             raise ValueError(f"labels.json 缺少 images 列表: {labels_path}")
 
-        root = Path(data_root) if data_root else Path(doc.get("data_root", ""))
-        if not str(root).strip():
+        # [tags/B-2] 先判原始字符串再 Path 化：str(Path("")) 恒为 "."，
+        # 直接 Path 化会使空值防御永不生效，静默以 CWD 为根导致全部图片失败
+        root_raw = data_root if data_root else doc.get("data_root", "")
+        if not str(root_raw).strip():
             raise ValueError("未提供 data_root，且 labels.json 内嵌 data_root 为空")
+        root = Path(root_raw)
         self.data_root = root
         self.img_size = int(img_size)
         self.tag_list = tuple(tag_list)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import torch
 
 from tags.dataset import TagsDataset, stratified_split_tags
@@ -18,6 +19,17 @@ def _write_labels(path: Path, images: list[dict], data_root: str = "") -> Path:
     return path
 
 
+def test_missing_data_root_raises(tmp_path: Path) -> None:
+    """[tags/B-2] 未传 data_root 且 labels.json 内嵌值为空时显式抛 ValueError。"""
+    labels = _write_labels(
+        tmp_path / "labels.json",
+        [{"path": "a/1.jpg", "tags": ["灵魂"]}],
+        data_root="",
+    )
+    with pytest.raises(ValueError, match="data_root"):
+        TagsDataset(labels)
+
+
 def test_multihot_encoding_and_vocab_filter(tmp_path: Path) -> None:
     """V0 顺序 multi-hot；词表外标签（官方图/未知）不进入目标与计数。"""
     labels = _write_labels(
@@ -26,6 +38,7 @@ def test_multihot_encoding_and_vocab_filter(tmp_path: Path) -> None:
             {"path": "a/1.jpg", "tags": ["灵魂", "NSFW", "官方图"]},
             {"path": "a/2.jpg", "tags": ["删除", "小水印", "未知标签"]},
         ],
+        data_root=str(tmp_path),  # [tags/B-2] 显式传根，本用例不触盘
     )
     ds = TagsDataset(labels)
     assert len(ds) == 2
@@ -46,6 +59,7 @@ def test_skip_missing_and_conflicting_preference(tmp_path: Path) -> None:
             {"path": "a/unlabeled.jpg", "tags": []},
             {"path": "a/conflict.jpg", "tags": ["灵魂", "删除", "NSFW"]},
         ],
+        data_root=str(tmp_path),  # [tags/B-2] 显式传根，本用例不触盘
     )
     ds = TagsDataset(labels)
     assert len(ds) == 1
@@ -96,7 +110,7 @@ def test_stratified_split_group_representation_and_reproducibility(tmp_path: Pat
         images.append({"path": f"g/soul_{i}.jpg", "tags": ["灵魂"]})
     for i in range(5):
         images.append({"path": f"g/del_{i}.jpg", "tags": ["删除"]})
-    ds = TagsDataset(_write_labels(tmp_path / "labels.json", images))
+    ds = TagsDataset(_write_labels(tmp_path / "labels.json", images, data_root=str(tmp_path)))
 
     train_idx, val_idx = stratified_split_tags(ds, val_ratio=0.25, seed=42)
     assert sorted(train_idx + val_idx) == list(range(len(ds)))  # 守恒且不重不漏
@@ -115,7 +129,7 @@ def test_stratified_split_single_member_group_stays_in_train(tmp_path: Path) -> 
     """单样本组不拆分，留在训练集（避免稀有组唯一样本进 val）。"""
     images = [{"path": f"m/{i}.jpg", "tags": ["一般"]} for i in range(10)]
     images.append({"path": "m/solo.jpg", "tags": ["灵魂"]})
-    ds = TagsDataset(_write_labels(tmp_path / "labels.json", images))
+    ds = TagsDataset(_write_labels(tmp_path / "labels.json", images, data_root=str(tmp_path)))
     train_idx, val_idx = stratified_split_tags(ds, val_ratio=0.5, seed=7)
     solo = next(i for i, entry in enumerate(ds.entries) if entry["pref"] == "灵魂")
     assert solo in train_idx
