@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import torch
+import yaml
 
-from tags.features import count_bad_images
+from tags.features import FEATURES_CACHE_VERSION, count_bad_images
 from tags.train import (
     average_precision,
     compute_pos_weight,
@@ -19,7 +21,7 @@ from tags.train import (
     load_v0_checkpoint,
 )
 from tags.vocab import V0_TRAIN_TAGS
-from tags_train import run_tags_training
+from tags_train import main, run_tags_training
 from tests.conftest import make_rgb_jpeg
 from tools import load_json
 
@@ -76,7 +78,9 @@ def _make_config() -> dict:
     }
 
 
-def _run(tmp_path: Path, *, feature_cache: Path, epochs: int) -> tuple[int, Path, Path]:
+def _run(
+    tmp_path: Path, *, feature_cache: Path, epochs: int, img_size: int = IMG_SIZE
+) -> tuple[int, Path, Path]:
     """搭建数据并跑一次完整入口，返回 (返回码, checkpoint, report)。"""
     data_root = tmp_path / "data"
     data_root.mkdir(exist_ok=True)  # 缓存复用测试会第二次进入同一目录
@@ -91,7 +95,7 @@ def _run(tmp_path: Path, *, feature_cache: Path, epochs: int) -> tuple[int, Path
         checkpoint_path=checkpoint_path,
         report_path=report_path,
         arch=ARCH,
-        img_size=IMG_SIZE,
+        img_size=img_size,
         epochs=epochs,
         feature_cache=feature_cache,
         backbone_weights=None,  # 无真实 WD 权重，随机骨干即可验证流程
@@ -258,3 +262,108 @@ def test_random_backbone_warning_when_no_weights(tmp_path: Path, capsys) -> None
     )
     assert rc == 0
     assert "警告: 未加载骨干权重，使用随机骨干" in capsys.readouterr().out
+
+
+def test_feature_cache_invalidated_on_img_size_change(tmp_path: Path, capsys) -> None:
+    """[tags/G-1] 缓存键 img_size 变更后不命中旧缓存，重算并覆盖写。"""
+    cache = tmp_path / "features.pt"
+    rc1, _, _ = _run(tmp_path, feature_cache=cache, epochs=1)
+    assert rc1 == 0
+    assert "已写入特征缓存" in capsys.readouterr().out
+
+    rc2, _, _ = _run(tmp_path, feature_cache=cache, epochs=1, img_size=IMG_SIZE + 32)
+    assert rc2 == 0
+    out2 = capsys.readouterr().out
+    assert "命中特征缓存" not in out2  # 旧缓存未命中
+    assert "已写入特征缓存" in out2  # 重新提特征并落盘
+    payload = torch.load(cache, map_location="cpu", weights_only=True)
+    assert payload["img_size"] == IMG_SIZE + 32  # 缓存已按新键覆盖
+
+
+def test_feature_cache_invalidated_on_version_mismatch(tmp_path: Path, capsys) -> None:
+    """[tags/C-1] 缓存 version 与 FEATURES_CACHE_VERSION 不符时失效重算。"""
+    cache = tmp_path / "features.pt"
+    rc1, _, _ = _run(tmp_path, feature_cache=cache, epochs=1)
+    assert rc1 == 0
+    capsys.readouterr()
+
+    # 篡改缓存 version 模拟旧版本残留
+    payload = torch.load(cache, map_location="cpu", weights_only=True)
+    payload["version"] = FEATURES_CACHE_VERSION - 1
+    torch.save(payload, cache)
+
+    rc2, _, _ = _run(tmp_path, feature_cache=cache, epochs=1)
+    assert rc2 == 0
+    out2 = capsys.readouterr().out
+    assert "命中特征缓存" not in out2
+    assert "已写入特征缓存" in out2
+    rewritten = torch.load(cache, map_location="cpu", weights_only=True)
+    assert rewritten["version"] == FEATURES_CACHE_VERSION
+
+
+def test_run_labels_missing_returns_2(tmp_path: Path) -> None:
+    """[tags/G-2] labels.json 不存在：打印 ERROR 并返回 2。"""
+    rc = run_tags_training(
+        _make_config(),
+        labels_path=tmp_path / "nope.json",
+        data_root=tmp_path,
+        checkpoint_path=tmp_path / "m" / "best.pth",
+        report_path=tmp_path / "report.json",
+        device="cpu",
+    )
+    assert rc == 2
+
+
+def test_run_all_samples_skipped_returns_2(tmp_path: Path) -> None:
+    """[tags/G-2] labels 内图片全部喜好缺失：无可用样本，返回 2。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    labels = _write_labels(
+        tmp_path / "labels.json",
+        [{"path": "a/x.jpg", "tags": ["无背景"]}, {"path": "a/y.jpg", "tags": []}],
+        data_root,
+    )
+    rc = run_tags_training(
+        _make_config(),
+        labels_path=labels,
+        data_root=data_root,
+        checkpoint_path=tmp_path / "m" / "best.pth",
+        report_path=tmp_path / "report.json",
+        device="cpu",
+    )
+    assert rc == 2
+
+
+def test_load_v0_checkpoint_rejects_foreign_format(tmp_path: Path) -> None:
+    """[tags/G-2] 非 tags_v0 格式的 .pth 文件：显式 ValueError 拒绝。"""
+    fake = tmp_path / "foreign.pth"
+    torch.save({"format": "rank_v1", "state_dict": {}}, fake)
+    with pytest.raises(ValueError, match="非 tags_v0"):
+        load_v0_checkpoint(fake)
+
+
+def test_main_output_paths_fall_back_to_config(tmp_path: Path) -> None:
+    """[tags/C-2] CLI 未传输出路径时，checkpoint/report 写到 config 指定位置。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    images = _build_dataset(data_root)
+    labels_path = _write_labels(tmp_path / "labels.json", images, data_root)
+    config = _make_config()
+    config.update(
+        {
+            "labels_path": str(labels_path),
+            "feature_cache": str(tmp_path / "features.pt"),
+            "checkpoint_out": str(tmp_path / "out" / "cfg_best.pth"),
+            "report_out": str(tmp_path / "out" / "cfg_report.json"),
+        }
+    )
+    config_path = tmp_path / "tags_v0.yaml"
+    config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+
+    rc = main(["--config", str(config_path)])  # CLI 不传任何输出路径
+    assert rc == 0
+    checkpoint = tmp_path / "out" / "cfg_best.pth"
+    report_path = tmp_path / "out" / "cfg_report.json"
+    assert checkpoint.is_file() and report_path.is_file()
+    report = load_json(report_path)
+    assert report["checkpoint"] == str(checkpoint)
