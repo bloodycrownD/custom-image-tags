@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# 与 history/demo2.py 一致的图片扩展名
+# 支持的图片扩展名（rank 与 tags 两条链共用的图片枚举口径）
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 
 # pairs.json 契约常量
