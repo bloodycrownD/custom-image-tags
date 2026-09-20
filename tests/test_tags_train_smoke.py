@@ -1,0 +1,194 @@
+"""tags v0 训练端到端冒烟：resnet18 小骨干 + 真图假 labels，函数级调用入口。
+
+不依赖真实 EVA02-L 权重与真实图库：小 img_size、CPU、秒级完成，
+验证 dataset → 特征预计算 → 头训练 → checkpoint 与报告产出全链路。
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import torch
+
+from tags.features import count_bad_images
+from tags.train import (
+    average_precision,
+    compute_pos_weight,
+    compute_tag_metrics,
+    load_v0_checkpoint,
+)
+from tags.vocab import V0_TRAIN_TAGS
+from tags_train import run_tags_training
+from tests.conftest import make_rgb_jpeg
+from tools import load_json
+
+ARCH = "resnet18"  # 仅测试用小骨干；生产为 eva02_large_patch14_448
+IMG_SIZE = 64
+
+
+def _build_dataset(data_root: Path) -> list[dict]:
+    """构造 4 个喜好组共 24 张真 JPEG + 1 坏图 + 2 张待跳过图，返回 images 列表。"""
+    images: list[dict] = []
+    for pref, count in [("灵魂", 3), ("喜欢", 5), ("一般", 10), ("删除", 6)]:
+        for i in range(count):
+            rel = f"author/{pref}_{i}.jpg"
+            tags = [pref]
+            if i % 2 == 0:
+                tags.append("无背景")
+            if i % 3 == 0:
+                tags.append("NSFW")
+            make_rgb_jpeg(data_root / rel, color=(i * 8 % 256, 100, 150))
+            images.append({"path": rel, "tags": tags})
+    # 坏图：喜好正常 → 入集，特征阶段以全白占位提取
+    (data_root / "author" / "bad.jpg").write_bytes(b"not an image")
+    images.append({"path": "author/bad.jpg", "tags": ["一般", "小水印"]})
+    # 喜好缺失 → 跳过
+    make_rgb_jpeg(data_root / "author" / "nopref.jpg")
+    images.append({"path": "author/nopref.jpg", "tags": ["无背景"]})
+    # 喜好冲突 → 跳过
+    make_rgb_jpeg(data_root / "author" / "conflict.jpg")
+    images.append({"path": "author/conflict.jpg", "tags": ["灵魂", "删除"]})
+    return images
+
+
+def _write_labels(path: Path, images: list[dict], data_root: Path) -> Path:
+    doc = {"version": 1, "data_root": str(data_root), "vocab": {}, "stats": {}, "images": images}
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _make_config() -> dict:
+    """最小训练配置（覆盖式 CLI 的 config 部分）。"""
+    return {
+        "arch": ARCH,
+        "img_size": IMG_SIZE,
+        "batch_size": 8,
+        "lr": 1.0e-3,
+        "weight_decay": 1.0e-2,
+        "epochs": 3,
+        "early_stop_patience": 100,  # 冒烟不触发早停
+        "val_ratio": 0.25,
+        "seed": 0,
+        "dropout": 0.1,
+        "device": "cpu",
+        "dataloader": {"num_workers": 0},
+    }
+
+
+def _run(tmp_path: Path, *, feature_cache: Path, epochs: int) -> tuple[int, Path, Path]:
+    """搭建数据并跑一次完整入口，返回 (返回码, checkpoint, report)。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir(exist_ok=True)  # 缓存复用测试会第二次进入同一目录
+    images = _build_dataset(data_root)
+    labels_path = _write_labels(tmp_path / "labels.json", images, data_root)
+    checkpoint_path = tmp_path / "models" / "tags_v0_best.pth"
+    report_path = tmp_path / "tags_v0_report.json"
+    rc = run_tags_training(
+        _make_config(),
+        labels_path=labels_path,
+        data_root=data_root,
+        checkpoint_path=checkpoint_path,
+        report_path=report_path,
+        arch=ARCH,
+        img_size=IMG_SIZE,
+        epochs=epochs,
+        feature_cache=feature_cache,
+        backbone_weights=None,  # 无真实 WD 权重，随机骨干即可验证流程
+        device="cpu",
+    )
+    return rc, checkpoint_path, report_path
+
+
+def test_v0_pipeline_smoke(tmp_path: Path) -> None:
+    """全流程：入口返回 0，产出 checkpoint / 报告，且可重建模型。"""
+    rc, checkpoint_path, report_path = _run(tmp_path, feature_cache=tmp_path / "features.pt", epochs=3)
+    assert rc == 0
+    assert checkpoint_path.is_file()
+    assert report_path.is_file()
+
+    # checkpoint 重建：resnet18 骨干 + 头权重，前向输出 9 维 logits
+    model, payload = load_v0_checkpoint(checkpoint_path, "cpu")
+    assert payload["format"] == "tags_v0"
+    assert payload["arch"] == ARCH
+    assert payload["img_size"] == IMG_SIZE
+    assert payload["tag_list"] == list(V0_TRAIN_TAGS)
+    assert "per_tag_metrics" in payload and "pos_weight" in payload
+    assert payload["backbone_weights"] is None
+    with torch.no_grad():
+        logits = model(torch.randn(2, 3, IMG_SIZE, IMG_SIZE))
+    assert logits.shape == (2, len(V0_TRAIN_TAGS))
+
+    # 报告内容：25 张入集（24 正常 + 1 坏图），2 张跳过
+    report = load_json(report_path)
+    assert report["num_images"] == 25
+    assert report["skip_stats"] == {"no_preference": 1, "conflict_preference": 1}
+    assert report["train_size"] + report["val_size"] == 25
+    assert report["train_size"] > 0 and report["val_size"] > 0
+    assert set(report["val_metrics"]) == set(V0_TRAIN_TAGS)
+    assert report["epochs_run"] == 3
+    assert report["stopped_early"] is False
+    assert len(report["history"]) == 3
+    assert report["checkpoint"] == str(checkpoint_path)
+    # 每 tag 指标字段齐全
+    for tag_metrics in report["val_metrics"].values():
+        assert set(tag_metrics) >= {"ap", "f1_at_050", "support", "ranking_only"}
+
+
+def test_feature_cache_reused_on_second_run(tmp_path: Path, capsys) -> None:
+    """第二次运行命中特征缓存：不重算、缓存文件不被覆盖写。"""
+    cache = tmp_path / "features.pt"
+    rc1, checkpoint_path, _report = _run(tmp_path, feature_cache=cache, epochs=1)
+    assert rc1 == 0
+    assert cache.is_file()
+    assert "已写入特征缓存" in capsys.readouterr().out
+    mtime = cache.stat().st_mtime_ns
+
+    rc2, checkpoint_path2, _ = _run(tmp_path, feature_cache=cache, epochs=1)
+    assert rc2 == 0
+    assert checkpoint_path2.is_file()
+    out2 = capsys.readouterr().out
+    assert "命中特征缓存" in out2
+    assert "已写入特征缓存" not in out2
+    assert cache.stat().st_mtime_ns == mtime  # 未重算
+
+
+def test_count_bad_images_detects_corrupt_file(tmp_path: Path) -> None:
+    """坏图显式探测：与白占位静默语义互补。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "bad.jpg").write_bytes(b"not an image")
+    make_rgb_jpeg(data_root / "good.jpg")
+    assert count_bad_images(data_root, ["bad.jpg", "good.jpg"]) == ["bad.jpg"]
+
+
+def test_compute_pos_weight_ratios_and_fallback() -> None:
+    """per-tag 正负比正确；无正样本 tag 回退 1。"""
+    targets = torch.tensor([[1, 0], [0, 0], [0, 1], [0, 0]], dtype=torch.float32)
+    assert torch.allclose(compute_pos_weight(targets), torch.tensor([3.0, 3.0]))
+    assert torch.allclose(compute_pos_weight(torch.zeros(4, 1)), torch.tensor([1.0]))
+
+
+def test_average_precision_known_values() -> None:
+    """AP 手写实现与 step-wise 积分定义一致。"""
+    # 降序位置 [1,0,1]：precision 1/1, 2/3 → AP = (1 + 2/3) / 2
+    scores = torch.tensor([0.9, 0.8, 0.1])
+    labels = torch.tensor([1.0, 0.0, 1.0])
+    assert abs(average_precision(scores, labels) - (1 + 2 / 3) / 2) < 1e-6
+    # 完美分离 AP = 1
+    assert average_precision(torch.tensor([0.9, 0.8, 0.2]), torch.tensor([1.0, 1.0, 0.0])) == 1.0
+    # 无正样本约定 0
+    assert average_precision(torch.tensor([0.9, 0.1]), torch.tensor([0.0, 0.0])) == 0.0
+
+
+def test_compute_tag_metrics_ranking_only_flag() -> None:
+    """小支持数 tag 标注排序辅助档；F1@0.5 可计算。"""
+    probs = torch.tensor([[0.9, 0.8], [0.2, 0.7], [0.1, 0.6]])
+    targets = torch.tensor([[1.0, 1.0], [0.0, 0.0], [0.0, 0.0]])
+    metrics = compute_tag_metrics(probs, targets, ["tag_a", "tag_b"], small_tag_support=30)
+    assert metrics["tag_a"]["support"] == 1
+    assert metrics["tag_a"]["ranking_only"] is True
+    assert abs(metrics["tag_a"]["ap"] - 1.0) < 1e-6
+    assert metrics["tag_a"]["f1_at_050"] == 1.0
+    # tag_b 概率全在 0.5 之上：pred 全正 → precision=1/3, recall=1 → F1=0.5
+    assert metrics["tag_b"]["f1_at_050"] == 0.5
