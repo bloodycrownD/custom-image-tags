@@ -50,6 +50,9 @@ v0 方案（沿用记忆拍板）：冻结 wd-eva02-large-tagger-v3 骨干 + 预
 - **入口**：`tags_train.py` CLI 镜像 rank_train.py 的 `--config` + None 哨兵覆盖风格；
   流程 = 加载 labels → 分层划分 → 特征预计算 → pos_weight → 训头 → 评估 → 写
   `models/tags/v0_best.pth` + `data/classification/tags_v0_report.json`。
+  CR 修复后（fix/cr-round1）：`backbone_weights` 与 `checkpoint_out/report_out` 同样
+  支持「CLI 未传 → 回退 config 字段」（[tags/B-1][tags/C-2]）；未提供骨干权重时
+  入口显式打印「警告: 未加载骨干权重，使用随机骨干」，不再静默随机初始化。
 
 ## 测试策略
 
