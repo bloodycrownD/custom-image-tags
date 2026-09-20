@@ -9,7 +9,7 @@
 - spec_path: `docs/iterations/multi-label-tags/features/v0-tags-training/spec.md`
 - review_round: 2
 - dag_version: 3
-- 状态: draft
+- 状态: fix-spec-ready（2026-09-20 用户确认：「按你的建议来吧」——spec_deviation 承接方案确认、待拍板按建议拍板）
 - 说明: 全量 main 分支 CR（代码首次评审）。rank 区已冻结，其发现不入本迭代 must-fix，统一进「待拍板」附录（见 Open questions #2）。
 
 ## Must-fix（按 P0 → P1 → P2）
@@ -154,8 +154,7 @@
 
 ## Spec deviations
 
-- **open** ×1：「None 哨兵覆盖 config」部分未兑现——`backbone_weights` / `checkpoint_out` / `report_out` 三字段 config 写入但 `main()` 不读取。
-  - 处置：已由 must-fix **tags/B-1**、**tags/C-2** 承接，执行后闭合；下轮 review-full 验证。
+- ~~open~~ **fixed** ×1：「None 哨兵覆盖 config」部分未兑现——已由 must-fix **tags/B-1**、**tags/C-2** 承接，用户确认该承接方案（2026-09-20），随 must-fix 执行闭合。
 
 ## Open questions / 待拍板
 
@@ -193,7 +192,14 @@
 
 ## 已豁免（用户确认不修）
 
-- 暂无。待拍板项（含 rank-frozen 17 条）经用户决策后如有不修者，移入本节并附用户原话。
+用户原话（2026-09-20）：「按你的建议来吧」。按建议拍板结果：
+
+- **#1 history/ 处置**：取默认方案**删除**（tools/C-2 主方案执行，不归档）。
+- **#2 rank-frozen 17 条 + #10 export_active_queue O(N²)**：**整体豁免**——尊重 RULE「rank 代码冻结不演进」约定，不立项修复。附条件：将来若复用 rank 工具链（尤其 resume 增量训练或 export_active_queue 跑全库），须先处理 rank/B-1（train_group 索引错位）与 #10（三次 O(N²) 遍历的 OOM 风险），并优先补 rank/G-1 测试缺口。
+- **#3 AP ties 措辞**：按建议改 docstring 措辞（随 K 节顺手项执行，不单列 must-fix）。
+- **#4 pandas**：**删除**（tools/C-8 按默认方案执行）。
+- **#8 README**：按建议补一个简短 README（入口/环境/数据约定），随 K 节收尾项执行。
+- **#5/#6/#7/#9/#11/#12**：维持现状不动（#11 分层意图说明并入 tools/C-3 docstring 执行；其余观察项留档）。
 
 ## 合并后 QA（manual_user）
 
