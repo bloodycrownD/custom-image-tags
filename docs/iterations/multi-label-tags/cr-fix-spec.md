@@ -9,7 +9,7 @@
 - spec_path: `docs/iterations/multi-label-tags/features/v0-tags-training/spec.md`
 - review_round: 2
 - dag_version: 3
-- 状态: fix-spec-ready（2026-09-20 用户确认：「按你的建议来吧」——spec_deviation 承接方案确认、待拍板按建议拍板）
+- 状态: **executed**（2026-09-20 于 fix/cr-round1 全量执行并合回 main 7979a37；17/17 must-fix 已执行，全量回归 72 passed，两条合并后 QA 通过——重扫 453 计数一致、默认入口正确加载权重）
 - 说明: 全量 main 分支 CR（代码首次评审）。rank 区已冻结，其发现不入本迭代 must-fix，统一进「待拍板」附录（见 Open questions #2）。
 
 ## Must-fix（按 P0 → P1 → P2）
