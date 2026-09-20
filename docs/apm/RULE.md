@@ -10,7 +10,7 @@
 - 2026-09-12：tag 方案在 feature/multi-label-tags 分支开发，代码落 tags/ 包；v1 词表不含作者组（作者 base rate 走两段式先验融合，作者预测/画风相似留待 v2）。
 
 ## 约定
-- 分支结构（2026-09-20 起）：main = 主干与 GitHub 默认分支（rank 冻结代码 + tags 已交付进展都在其历史中）；feature/multi-label-tags = tag 方案活跃开发线，阶段性成果合回 main；废弃范式的分支直接删除，历史靠 main 保留。
+- 分支结构（2026-09-20 起）：main = 唯一长期分支与 GitHub 默认分支（rank 冻结代码 + tags 全部交付都在其历史中）。小步改动直接提交 main；阶段性工作可开短命 feature 分支，完成后合回并删除，历史靠 main 保留。
 - 远程仓库：origin = git@github.com:bloodycrownD/custom-image-tags.git（跨机开发；笔记本侧 SSH 22 直连可用，台式机侧走 https，均指向同一仓库）。
 - 数据目录只读，所有产物写入 classify 仓库 data/ 下。
 - 人工标注用 TagSpaces：标签写在文件名结尾的方括号组（`图 [灵魂] [NSFW].png`），无 sidecar 文件；训练数据用 tools/scan_tagspaces.py 扫描生成 labels.json，词表见 tags/vocab.py。
