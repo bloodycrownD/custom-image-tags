@@ -56,6 +56,8 @@ def _load_feature_cache(
     if not isinstance(payload, dict):
         return None
     checks = (
+        # [tags/C-1] version 纳入缓存键校验：bump FEATURES_CACHE_VERSION 时旧缓存自动失效
+        payload.get("version") == FEATURES_CACHE_VERSION,
         payload.get("arch") == arch,
         payload.get("img_size") == int(img_size),
         payload.get("num_features") == int(num_features),

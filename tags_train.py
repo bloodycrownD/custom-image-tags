@@ -37,6 +37,8 @@ from tools import load_json, save_json, utc_now_iso
 
 DEFAULT_CHECKPOINT = Path("models/tags/v0_best.pth")
 DEFAULT_REPORT = Path("data/classification/tags_v0_report.json")
+# 摘要行 tag 列对齐宽度（显示宽度：中文字符记 2；当前词表 tag 最宽 6，取 8 留白）
+TAG_COL_WIDTH = 8
 
 
 def load_config(path: Path) -> dict:
@@ -52,10 +54,16 @@ def _resolve_device(spec: str | None) -> torch.device:
     return torch.device(spec)
 
 
+def _display_width(text: str) -> int:
+    """粗略显示宽度：ASCII 记 1、其余（含 CJK）记 2，用于终端列对齐。"""
+    return sum(1 if ch.isascii() else 2 for ch in text)
+
+
 def _fmt_summary_line(tag: str, m: dict[str, Any]) -> str:
-    """格式化单个 tag 的评估行；排序辅助档追加标注。"""
+    """格式化单个 tag 的评估行；tag 列按东亚显示宽度对齐；排序辅助档追加标注。"""
+    pad = " " * max(1, TAG_COL_WIDTH - _display_width(tag))
     flag = "  [排序辅助档，不做阈值判定]" if m["ranking_only"] else ""
-    return f"  {tag:<6} AP={m['ap']:.4f} F1@0.5={m['f1_at_050']:.4f} 支持={m['support']}{flag}"
+    return f"  {tag}{pad} AP={m['ap']:.4f} F1@0.5={m['f1_at_050']:.4f} 支持={m['support']}{flag}"
 
 
 def run_tags_training(
@@ -270,8 +278,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-ratio", type=float, default=None, help="验证集比例")
     parser.add_argument("--seed", type=int, default=None, help="随机种子")
     parser.add_argument("--feature-cache", type=Path, default=None, help="特征缓存 .pt 路径")
-    parser.add_argument("--checkpoint-out", type=Path, default=DEFAULT_CHECKPOINT, help="输出 checkpoint 路径")
-    parser.add_argument("--report-out", type=Path, default=DEFAULT_REPORT, help="输出报告 json 路径")
+    parser.add_argument("--checkpoint-out", type=Path, default=None, help="输出 checkpoint 路径（缺省回退 config 的 checkpoint_out）")
+    parser.add_argument("--report-out", type=Path, default=None, help="输出报告 json 路径（缺省回退 config 的 report_out）")
     parser.add_argument("--device", type=str, default=None, help="设备：auto / cpu / cuda")
     return parser
 
@@ -286,12 +294,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     config = load_config(args.config)
 
+    # [tags/C-2] CLI default=None 哨兵：未传时回退 config 字段，兑现「CLI 覆盖 config」语义
+    checkpoint_out = args.checkpoint_out or Path(config.get("checkpoint_out", DEFAULT_CHECKPOINT))
+    report_out = args.report_out or Path(config.get("report_out", DEFAULT_REPORT))
+
     return run_tags_training(
         config,
         labels_path=args.labels,
         data_root=args.data_root,
-        checkpoint_path=args.checkpoint_out.resolve(),
-        report_path=args.report_out.resolve(),
+        checkpoint_path=checkpoint_out.resolve(),
+        report_path=report_out.resolve(),
         arch=args.arch,
         img_size=args.img_size,
         batch_size=args.batch_size,

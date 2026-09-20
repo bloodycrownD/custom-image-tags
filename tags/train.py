@@ -188,8 +188,10 @@ def train_head(
 def average_precision(scores: torch.Tensor, labels: torch.Tensor) -> float:
     """阈值无关的 per-tag Average Precision（PR 曲线 step-wise 积分）。
 
-    按置信度降序累计 TP，AP = 各正样本位置 precision 的平均（与
-    sklearn average_precision_score 同定义）；无正样本时约定返回 0。
+    按置信度降序累计 TP，AP = 各正样本位置 precision 的平均；无并列分数时
+    与 sklearn ``average_precision_score`` 结果一致（有并列分数时本实现
+    不做并列组内插值，按 stable 排序的单一顺序累计，结果可能偏低）；
+    无正样本时约定返回 0。
     """
     pos_total = int(labels.sum().item())
     if pos_total == 0 or scores.numel() == 0:

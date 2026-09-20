@@ -61,14 +61,15 @@ class TagsDataset(Dataset):
         self.img_size = int(img_size)
         self.tag_list = tuple(tag_list)
 
-        tag_index = {tag: i for i, tag in enumerate(self.tag_list)}
+        # [tags/C-3] tag_index 只构造一次，供过滤循环与 _build_targets 复用
+        self._tag_index = {tag: i for i, tag in enumerate(self.tag_list)}
         self.entries: list[dict] = []
         self.skip_stats = {"no_preference": 0, "conflict_preference": 0}
         self.tag_counts: dict[str, int] = {tag: 0 for tag in self.tag_list}
 
         for item in images:
             path = item.get("path", "")
-            tags = [t for t in item.get("tags", []) if t in tag_index]
+            tags = [t for t in item.get("tags", []) if t in self._tag_index]
             prefs = PREFERENCE_SET.intersection(tags)
             if len(prefs) == 0:
                 self.skip_stats["no_preference"] += 1
@@ -84,11 +85,10 @@ class TagsDataset(Dataset):
 
     def _build_targets(self) -> torch.Tensor:
         """把每张图保留的 tags 编码为 (N, T) multi-hot float32 矩阵。"""
-        tag_index = {tag: i for i, tag in enumerate(self.tag_list)}
         targets = torch.zeros(len(self.entries), len(self.tag_list), dtype=torch.float32)
         for row, entry in enumerate(self.entries):
             for tag in entry["tags"]:
-                targets[row, tag_index[tag]] = 1.0
+                targets[row, self._tag_index[tag]] = 1.0
         return targets
 
     def __len__(self) -> int:
