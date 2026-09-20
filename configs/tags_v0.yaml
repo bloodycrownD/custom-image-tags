@@ -1,0 +1,37 @@
+# tags v0 训练配置：冻结 EVA02-L 骨干 + 特征预计算 + 线性头 BCE 训练
+# CLI 参数（--epochs 等）非空时覆盖本文件对应字段
+
+# labels.json（tools/scan_tagspaces.py 生成，gitignored）
+labels_path: data/classification/tags.labels.json
+
+# 图片根目录；留空则使用 labels.json 内嵌的 data_root
+data_root: ""
+
+# 冻结骨干：wd-eva02-large-tagger-v3（与 tags/preprocess.py 白底管线配套）
+arch: eva02_large_patch14_448
+backbone_weights: data/pretrained/wd-eva02-large-tagger-v3/model.safetensors
+
+# 预处理与特征
+img_size: 448                 # WD 权重要求的输入边长
+feature_cache: data/classification/tags_v0_features.pt  # (N,1024) fp16 缓存，键匹配则跳过重算
+
+# 线性头训练（特征已冻结，训练很快）
+batch_size: 16
+lr: 1.0e-3
+weight_decay: 1.0e-2
+dropout: 0.1                  # TagModel 头内 Dropout
+epochs: 100
+early_stop_patience: 10       # val loss 连续不降的早停轮数
+
+# 划分与复现
+val_ratio: 0.15               # 按喜好组分层抽样的验证集比例
+seed: 42
+
+# 输出
+checkpoint_out: models/tags/v0_best.pth                       # *.pth 已 gitignore
+report_out: data/classification/tags_v0_report.json           # 评估报告（gitignored 目录内）
+
+device: auto                  # auto / cpu / cuda
+
+dataloader:
+  num_workers: 0              # 特征预计算阶段的 DataLoader 进程数（Windows 下 0 最稳）
