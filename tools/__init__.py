@@ -1,4 +1,16 @@
-"""数据工具链：train_group 构建、pairs 种子生成、校验与合并。"""
+"""共享工具层：JSON 读写、路径与图片枚举等无业务依赖的基础工具。
+
+分层意图（CR 待拍板 #11）：本模块是 rank 与 tags 两条链共用的底层工具层，
+保持零业务依赖——禁止 import tags / rank（tools/ 下的业务脚本可以反向依赖
+本层与 tags/rank，但本层不依赖任何业务包，避免模块级环）。
+
+现役工具概览：
+- pairs 链（seed/merge/validate/active_queue 等）：已冻结留存，不再演进；
+- train_group 构建：tools/build_groups.py；
+- TagSpaces 扫描：tools/scan_tagspaces.py（labels.json 生成）；
+- WD 权重验证：tools/verify_wd_load.py；
+- 评估报告：tools/report_results.py（rank 冻结链）。
+"""
 
 from __future__ import annotations
 

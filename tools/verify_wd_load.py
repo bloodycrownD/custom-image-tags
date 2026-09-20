@@ -16,11 +16,13 @@ import sys
 from pathlib import Path
 
 import torch
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tags.model import WD_ARCH, TagModel, load_wd_pretrained  # noqa: E402
 from tags.preprocess import WD_IMG_SIZE, build_wd_preprocess  # noqa: E402
+from tags.vocab import V0_TRAIN_TAGS  # noqa: E402
 
 DEFAULT_WEIGHTS = Path("data/pretrained/wd-eva02-large-tagger-v3/model.safetensors")
 
@@ -32,7 +34,8 @@ def main() -> int:
         return 2
 
     print(f"构建骨干 {WD_ARCH} ...")
-    model = TagModel(WD_ARCH, num_tags=8, pretrained=False)
+    # [tools/C-6] 头维度跟随现行词表（此前硬编码 num_tags=8 已过时）
+    model = TagModel(WD_ARCH, num_tags=len(V0_TRAIN_TAGS), pretrained=False)
 
     print("加载 safetensors ...")
     dropped = load_wd_pretrained(model, weights)
@@ -40,7 +43,7 @@ def main() -> int:
 
     model.eval()
     white = build_wd_preprocess(WD_IMG_SIZE)(
-        __import__("PIL.Image", fromlist=["Image"]).new("RGB", (64, 64), (255, 255, 255))
+        Image.new("RGB", (64, 64), (255, 255, 255))
     ).unsqueeze(0)
     with torch.no_grad():
         feats = model.backbone(white)

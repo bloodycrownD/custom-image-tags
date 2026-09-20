@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import collections
-import json
 import sys
 from pathlib import Path
 
@@ -26,8 +25,10 @@ from tags.vocab import (  # noqa: E402
     PREFERENCE_TAGS,
     V0_TRAIN_TAGS,
 )
+from tools import IMAGE_EXTENSIONS, save_json  # noqa: E402
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
+# [tools/C-5] 复用共享扩展名常量消除双轨；推理池需收录动图，rank 链不收
+IMAGE_EXTS = IMAGE_EXTENSIONS | {".gif"}
 LABELS_VERSION = 1
 
 
@@ -102,10 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     if stats["unknown_trailing_tags"]:
         print("[警告] 未知结尾方括号（可能是拼错标签）:", stats["unknown_trailing_tags"])
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # [tools/C-5] 统一走共享 save_json 落盘（UTF-8、缩进 2、尾换行），不再手写序列化
+    save_json(args.output, doc)
     print(f"已写入 {args.output}（{len(doc['images'])} 条）")
     return 0
 

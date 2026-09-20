@@ -13,14 +13,6 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
-@pytest.fixture
-def tmp_data_root(tmp_path: Path) -> Path:
-    """创建最小 data_root 目录结构（无真实图片）。"""
-    root = tmp_path / "data"
-    root.mkdir()
-    return root
-
-
 def make_rgb_jpeg(path: Path, size: tuple[int, int] = (64, 64), color: tuple[int, int, int] = (100, 150, 200)) -> None:
     """创建可被 PIL 读取的最小 JPEG 测试图。"""
     path.parent.mkdir(parents=True, exist_ok=True)
