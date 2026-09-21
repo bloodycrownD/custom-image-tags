@@ -83,17 +83,19 @@ def _run_main(
 
 
 def test_dry_run_keeps_names_and_report(tmp_path: Path, monkeypatch) -> None:
-    """dry-run：全部文件名不变；报告 action 分布、目录映射、probs 键齐全。"""
+    """dry-run：全部文件名不变；报告 action 分布、目录映射（显式 dir）、probs 键齐全。"""
     root = _build_tree(tmp_path / "data")
     before = {p.relative_to(root).as_posix() for p in iter_images_under(root)}
-    rc, report_path = _run_main(tmp_path, root, monkeypatch, extra=["--n-mc", "5"])
+    rc, report_path = _run_main(
+        tmp_path, root, monkeypatch, extra=["--n-mc", "5", "--pref-source", "dir"]
+    )
     assert rc == 0
     after = {p.relative_to(root).as_posix() for p in iter_images_under(root)}
     assert after == before  # dry-run 不改名
 
     report = load_json(report_path)
     assert report["meta"]["mode"] == "dry-run"
-    assert report["meta"]["pref_source"] == "dir"  # good/keep/trash 齐备 → auto 选 dir
+    assert report["meta"]["pref_source"] == "dir"  # 显式 dir：目录映射生效
     assert report["meta"]["n_mc"] == 5
     assert report["meta"]["tag_list"] == list(V0_TRAIN_TAGS)
 
@@ -178,6 +180,22 @@ def test_pref_source_model_flat_dir(tmp_path: Path, monkeypatch) -> None:
     )
     assert rc2 == 0
     assert load_json(report2_path)["meta"]["pref_source"] == "model"
+
+
+def test_default_pref_source_is_model(tmp_path: Path, monkeypatch) -> None:
+    """默认（不传 --pref-source）即 model：即使 good/keep/trash 齐备也不目录映射。
+
+    2026-09-21 拍板：目录是作者内相对排序，与喜好标签的全局语义有偏差
+    （953690 修正实证 38/38），喜好一律模型预测。
+    """
+    root = _build_tree(tmp_path / "data")
+    rc, report_path = _run_main(tmp_path, root, monkeypatch, extra=["--n-mc", "5"])
+    assert rc == 0
+    report = load_json(report_path)
+    assert report["meta"]["pref_source"] == "model"
+    for im in report["images"]:
+        if im["action"] == "prefilled":
+            assert im["chosen_tags"][0] == im["model_pref"]
 
 
 def test_same_seed_reproducible_probs(tmp_path: Path, monkeypatch) -> None:

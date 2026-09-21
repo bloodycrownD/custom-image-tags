@@ -8,11 +8,13 @@
 ``--apply`` 才真正重命名文件。
 
 打标策略：
-- 喜好 4 tag 互斥单选：pref-source=dir 按 good/keep/trash 目录映射
-  （喜欢/一般/删除，相对路径第一段判定）；auto 在三档目录都含图时
-  优先 dir、否则回退 model argmax；dir 模式下目录未识别的图回退
-  model argmax，「灵魂」无目录对应——模型倾向灵魂的 good 图仅列入
-  soul_candidates 供人工补标；
+- 喜好 4 tag 互斥单选：**默认由模型 argmax 预测**（pref-source=model）。
+  注意：good/keep/trash 目录是**作者内相对排序**，与喜好标签的**全局绝对值**
+  语义有偏差（水平一般的作者，good 图全局也可能只是"一般"，2026-09-21
+  953690 修正实证 38/38），故目录映射不再是默认，仅可 --pref-source dir
+  显式启用；auto=三档目录齐备走 dir、否则回退 model，亦为显式选项；
+  dir 模式下目录未识别的图回退 model argmax，「灵魂」无目录对应——
+  模型倾向灵魂的 good 图仅列入 soul_candidates 供人工补标；
 - 负面 5 tag 多选：mean prob ≥ 阈值入选；强档（无背景/漫画图/NSFW）
   默认 0.5，弱档（小水印/低像素，v0 排序辅助档）保守取 max(阈值, 0.7)；
 - 文件名格式 ``{原stem}[{tag1} {tag2}]{原扩展名}``（方括号前无空格，
@@ -66,6 +68,8 @@ DEFAULT_REPORT = Path("data/classification/tags_prefill_report.json")
 # MC 协议默认值（记忆约定：n_mc 20~50；cudnn.deterministic）
 DEFAULT_N_MC = 20
 DEFAULT_SEED = 42
+# 喜好来源默认模型预测（目录映射语义偏差，见模块 docstring；dir/auto 仅显式选用）
+DEFAULT_PREF_SOURCE = "model"
 # 每图 MC 种子 = seed * 1_000_003 + 全枚举顺序索引（大素数乘子拉开相邻图种子）
 MC_SEED_STRIDE = 1_000_003
 # good/keep/trash 三分类目录（rank 链约定）→ 喜好 tag 映射
@@ -152,7 +156,7 @@ def run_tags_predict(
         neg_threshold if neg_threshold is not None else config.get("neg_threshold", NEG_STRONG_THRESHOLD)
     )
     weak_th = max(strong_th, NEG_WEAK_FLOOR)
-    requested_source = str(pref_source or config.get("pref_source", "auto"))
+    requested_source = str(pref_source or config.get("pref_source", DEFAULT_PREF_SOURCE))
 
     # ---- 输入校验（骨干权重缺失硬报错：随机骨干打出的标签不可接受）----
     if not checkpoint_path.is_file():
@@ -435,8 +439,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="真正执行重命名（缺省 dry-run 只出报告）",
     )
     parser.add_argument(
-        "--pref-source", choices=("auto", "dir", "model"), default=None,
-        help="喜好 tag 来源（默认 auto：三档目录齐备走 dir，否则 model）",
+        "--pref-source", choices=("model", "dir", "auto"), default=None,
+        help="喜好 tag 来源（默认 model=模型 argmax 预测；dir=good/keep/trash 目录映射，"
+             "注意目录是作者内相对排序与全局喜好语义有偏差；auto=三档目录齐备走 dir）",
     )
     parser.add_argument(
         "--neg-threshold", type=float, default=None,
