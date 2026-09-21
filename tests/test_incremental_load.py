@@ -41,6 +41,9 @@ def test_incremental_load_resume_training_loss_decreases(tmp_path: Path) -> None
 
     ckpt_path = tmp_path / "best.pth"
     group_map = GroupMap(groups={"a": 1}, authors={"a": 1})
+    # 模型创建前固定种子：随机初始化的权重决定 30 步后 loss 是否下降，
+    # 不固定会依赖全批次跑时前面测试遗留的 RNG 状态（偶发失败实测复现）
+    torch.manual_seed(7)
     model = PreferenceRanker(num_groups=1, embed_dim=8, pretrained=False)
     save_checkpoint(ckpt_path, model, group_map)
 
