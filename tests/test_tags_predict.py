@@ -218,6 +218,45 @@ def test_negative_subsumption_rule() -> None:
     assert select_negative_tags(probs2, tags, 0.5, 0.7) == ["无背景", "NSFW", "小水印"]
 
 
+def test_calibration_neutralizes_pos_weight_bias() -> None:
+    """频次匹配校准：阈值/归一 argmax 中和 pos_weight 稀有档通胀。
+
+    2026-09-25 实证：未校准 argmax 在 132450 上把 50% 图判成灵魂
+    （真实占比 ~4%，pos_weight≈24 抬高 logit）。
+    """
+    import torch as _torch
+
+    from tags.train import calibrate_tag_thresholds
+    from tags_predict import choose_preference
+
+    # 构造验证集（列序=tag_list：灵魂/喜欢/一般/删除）：
+    # 灵魂 1 正（prob 0.95）、一般 2 正（0.90/0.55）、删除 1 正（0.80）、喜欢 0 正
+    probs = _torch.tensor([[0.95, 0.05, 0.20, 0.02],  # 灵魂正例
+                           [0.10, 0.05, 0.90, 0.02],  # 一般正例
+                           [0.10, 0.05, 0.55, 0.02],  # 一般正例
+                           [0.10, 0.05, 0.05, 0.80]])  # 删除正例
+    targets = _torch.tensor([[1, 0, 0, 0],
+                             [0, 0, 1, 0],
+                             [0, 0, 1, 0],
+                             [0, 0, 0, 1]])
+    tag_list = ["灵魂", "喜欢", "一般", "删除"]
+    thr = calibrate_tag_thresholds(probs, targets, tag_list)
+    # 频次匹配：阈值 = 验证集第 k 高概率（k=正样本数）
+    assert abs(thr["灵魂"] - 0.95) < 1e-6
+    assert abs(thr["一般"] - 0.55) < 1e-6
+    assert abs(thr["删除"] - 0.80) < 1e-6
+    assert thr["喜欢"] == 1.0  # 验证集 0 正例 → 不预测
+
+    # 待判图：灵魂 0.60 > 一般 0.50 → 未校准 argmax 判灵魂（pos_weight 通胀形态）
+    raw = {"灵魂": 0.60, "喜欢": 0.05, "一般": 0.50, "删除": 0.02}
+    assert choose_preference(raw) == "灵魂"
+    # 校准后：0.60/0.95=0.63 < 0.50/0.55=0.91 → 判一般
+    assert choose_preference(raw, thr) == "一般"
+    # 真灵魂图（0.95 ≥ 阈值 0.95，归一 1.0）仍判灵魂
+    soul = {"灵魂": 0.95, "喜欢": 0.05, "一般": 0.20, "删除": 0.02}
+    assert choose_preference(soul, thr) == "灵魂"
+
+
 def test_same_seed_reproducible_probs(tmp_path: Path, monkeypatch) -> None:
     """同图同种子：同参数两次运行 probs/mc_std 逐位一致（n_mc=5）。"""
     root = tmp_path / "data"

@@ -241,6 +241,30 @@ def compute_tag_metrics(
     return metrics
 
 
+def calibrate_tag_thresholds(
+    probs: torch.Tensor,
+    targets: torch.Tensor,
+    tag_list: tuple[str, ...] | list[str],
+) -> dict[str, float]:
+    """频次匹配校准：每个 tag 取验证集第 k 高概率为阈值（k=该 tag 验证集正样本数）。
+
+    使验证集上预测正例率 ≈ 真实正例率，中和 per-tag pos_weight 造成的 logit
+    通胀（2026-09-25 实证：argmax 直接决策下 灵魂 pos_weight≈24 导致 132450
+    预填 50% 判灵魂，全训练集真实占比仅 4%）。k=0 时阈值 1.0（验证集无
+    正例证据则不预测）；结果夹在 [0.02, 0.98] 保证数值健全。
+    """
+    thresholds: dict[str, float] = {}
+    for j, tag in enumerate(tag_list):
+        k = int(targets[:, j].sum().item())
+        if k == 0:
+            thresholds[tag] = 1.0
+            continue
+        sorted_desc = torch.sort(probs[:, j], descending=True).values
+        thr = float(sorted_desc[k - 1].item())
+        thresholds[tag] = min(max(thr, 0.02), 0.98)
+    return thresholds
+
+
 def save_v0_checkpoint(
     path: Path | str,
     head_state_dict: dict[str, torch.Tensor],
@@ -256,6 +280,7 @@ def save_v0_checkpoint(
     val_loss: float | None = None,
     history: list[dict[str, float]] | None = None,
     per_tag_metrics: dict[str, dict[str, Any]] | None = None,
+    tag_thresholds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """保存 v0 头 checkpoint（仅头权重 + 重建元信息，不含骨干权重）。
 
@@ -283,6 +308,8 @@ def save_v0_checkpoint(
         payload["history"] = history
     if per_tag_metrics is not None:
         payload["per_tag_metrics"] = per_tag_metrics
+    if tag_thresholds is not None:
+        payload["tag_thresholds"] = tag_thresholds
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

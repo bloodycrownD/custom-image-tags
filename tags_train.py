@@ -27,6 +27,7 @@ from tags.features import FeatureDataset, precompute_features
 from tags.model import WD_ARCH, TagModel, load_wd_pretrained
 from tags.train import (
     TrainResult,
+    calibrate_tag_thresholds,
     compute_pos_weight,
     compute_tag_metrics,
     predict_probs,
@@ -215,6 +216,8 @@ def run_tags_training(
     model.head.to(dev)
     probs, val_targets = predict_probs(model.head, val_loader, dev)
     val_metrics = compute_tag_metrics(probs, val_targets, dataset.tag_list)
+    # 频次匹配校准：中和 pos_weight 通胀，阈值进 checkpoint meta 供预填决策
+    tag_thresholds = calibrate_tag_thresholds(probs, val_targets, dataset.tag_list)
     supported = [m["ap"] for m in val_metrics.values() if m["support"] > 0]
     mean_ap = sum(supported) / len(supported) if supported else 0.0
 
@@ -222,6 +225,7 @@ def run_tags_training(
         checkpoint_path,
         result.best_head_state,
         per_tag_metrics=val_metrics,
+        tag_thresholds=tag_thresholds,
         **checkpoint_fields,
         epoch=result.epochs_run,
         val_loss=result.best_val_loss,
@@ -243,6 +247,7 @@ def run_tags_training(
         "skip_stats": skip,
         "tag_counts": dataset.tag_counts,
         "pos_weight": {tag: float(pos_weight[i]) for i, tag in enumerate(dataset.tag_list)},
+        "tag_thresholds": tag_thresholds,
         "best_val_loss": result.best_val_loss,
         "epochs_run": result.epochs_run,
         "stopped_early": result.stopped_early,
@@ -258,6 +263,8 @@ def run_tags_training(
     for tag in dataset.tag_list:
         print(_fmt_summary_line(tag, val_metrics[tag]))
     print(f"mAP(val, 有支持 tag): {mean_ap:.4f}")
+    thr_str = "  ".join(f"{t}={tag_thresholds[t]:.2f}" for t in dataset.tag_list)
+    print(f"校准阈值(频次匹配): {thr_str}")
     print(f"checkpoint: {checkpoint_path}")
     print(f"报告: {report_path}")
     return 0

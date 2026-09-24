@@ -15,8 +15,10 @@
   最终定调完全依靠模型预估喜好，dir/auto 仅保留为显式选项（auto=三档
   目录齐备走 dir、否则 model）；dir 模式下目录未识别的图回退 model argmax，
   「灵魂」无目录对应——模型倾向灵魂的 good 图仅列入 soul_candidates 供人工补标；
-- 负面 5 tag 多选：mean prob ≥ 阈值入选；强档（无背景/漫画图/NSFW/官方图）
-  默认 0.5，弱档（小水印/低像素，v0 排序辅助档）保守取 max(阈值, 0.7)；
+- 负面 5 tag 多选：mean prob ≥ 阈值入选；**优先使用 checkpoint meta 的频次
+  匹配校准阈值**（训练时按验证集正例率定，中和 pos_weight 通胀；显式
+  ``--neg-threshold`` 时以用户值为准），无校准数据时回退强档 0.5 /
+  弱档（小水印/低像素）max(阈值, 0.7)；
   **大小负面吞并**：官方图/大水印属大负面（独占），任一大负面入选时
   小负面全部让位（2026-09-21 用户修正 114299 后确立的标注约定）；
 - 文件名格式 ``{原stem}[{tag1} {tag2}]{原扩展名}``（方括号前无空格，
@@ -85,22 +87,48 @@ NEG_WEAK_FLOOR = 0.7
 
 
 def select_negative_tags(
-    probs: dict[str, float], tag_list: list[str], strong_th: float, weak_th: float
+    probs: dict[str, float],
+    tag_list: list[str],
+    strong_th: float,
+    weak_th: float,
+    calibrated: dict[str, float] | None = None,
 ) -> list[str]:
     """按阈值选负面 tag，并应用大小负面吞并。
 
+    ``calibrated`` 为 checkpoint meta 的频次匹配校准阈值（tags/train.py
+    ``calibrate_tag_thresholds``），存在时优先于强/弱档固定阈值；显式传入
+    ``--neg-threshold`` 时调用方应置 ``calibrated=None`` 以用户值为准。
     任一大负面（官方图/大水印，见 tags/vocab.py BIG_NEGATIVE_TAGS）入选时，
     小负面全部让位——用户 2026-09-21 确立的标注约定：大负面独占。
     """
-    negs = [
-        tag
-        for tag in tag_list
-        if tag not in PREFERENCE_SET
-        and probs.get(tag, 0.0) >= (weak_th if tag in NEG_WEAK_TAGS else strong_th)
-    ]
+    negs: list[str] = []
+    for tag in tag_list:
+        if tag in PREFERENCE_SET:
+            continue
+        if calibrated is not None and tag in calibrated:
+            thr = calibrated[tag]
+        else:
+            thr = weak_th if tag in NEG_WEAK_TAGS else strong_th
+        if probs.get(tag, 0.0) >= thr:
+            negs.append(tag)
     if any(tag in BIG_NEGATIVE_TAGS for tag in negs):
         negs = [tag for tag in negs if tag in BIG_NEGATIVE_TAGS]
     return negs
+
+
+def choose_preference(
+    probs: dict[str, float], thresholds: dict[str, float] | None = None
+) -> str:
+    """喜好 4 档单选：有校准阈值时按 prob/阈值 归一后取最大（中和 per-tag
+    pos_weight 造成的稀有档 logit 通胀——2026-09-25 实证未校准 argmax 在
+    132450 上把 50% 图判成灵魂），否则退化为直接 argmax。
+    """
+    if thresholds:
+        return max(
+            PREFERENCE_TAGS,
+            key=lambda t: probs.get(t, 0.0) / max(thresholds.get(t, 0.02), 1e-6),
+        )
+    return max(PREFERENCE_TAGS, key=lambda t: probs.get(t, 0.0))
 
 
 def load_config(path: Path) -> dict:
@@ -214,6 +242,12 @@ def run_tags_predict(
         )
         return 2
     img_size = int(payload["img_size"])  # 预处理边长以 checkpoint 为准
+    # 频次匹配校准阈值（训练时按验证集写入 meta）；显式 --neg-threshold 时
+    # 负面侧以用户值为准（喜好侧校准不受影响）
+    calibrated = payload.get("tag_thresholds")
+    if not isinstance(calibrated, dict):
+        calibrated = None
+    neg_calibrated = calibrated if neg_threshold is None else None
 
     dev = _resolve_device(device or str(config.get("device", "auto")))
     torch.backends.cudnn.deterministic = True
@@ -289,14 +323,13 @@ def run_tags_predict(
                 rec["feat"] = feat
 
     # ---- MC dropout：每图独立种子，只循环 head ----
-    pref_indices = [tag_list.index(t) for t in PREFERENCE_TAGS]
     for rec in tqdm(pending, desc="MC dropout 采样", unit="img"):
         mean, std = _mc_head_probs(
             model.head, rec.pop("feat").to(dev), n_mc, seed * MC_SEED_STRIDE + rec["index"]
         )
         rec["probs"] = {tag: float(mean[j]) for j, tag in enumerate(tag_list)}
         rec["mc_std"] = {tag: float(std[j]) for j, tag in enumerate(tag_list)}
-        rec["model_pref"] = PREFERENCE_TAGS[int(mean[pref_indices].argmax())]
+        rec["model_pref"] = choose_preference(rec["probs"], calibrated)
 
     # ---- 打标决策与重命名 ----
     soul_candidates: list[dict[str, Any]] = []
@@ -306,7 +339,9 @@ def run_tags_predict(
         assert probs is not None
         chosen_pref = rec["dir_pref"] if effective_source == "dir" and rec["dir_pref"] else rec["model_pref"]
         assert chosen_pref is not None
-        rec["chosen_tags"] = [chosen_pref] + select_negative_tags(probs, tag_list, strong_th, weak_th)
+        rec["chosen_tags"] = [chosen_pref] + select_negative_tags(
+            probs, tag_list, strong_th, weak_th, neg_calibrated
+        )
         # 灵魂候选：dir 模式下 good 无「灵魂」对应，模型倾向灵魂的交人工补标
         if effective_source == "dir" and rec["dir_pref"] == "喜欢" and (
             rec["model_pref"] == "灵魂" or probs["灵魂"] >= 0.5
@@ -379,6 +414,7 @@ def run_tags_predict(
             "seed": seed,
             "pref_source": effective_source,
             "neg_thresholds": {"strong": strong_th, "weak": weak_th},
+            "calibrated_thresholds": calibrated or {},
             "created": utc_now_iso(),
         },
     }
