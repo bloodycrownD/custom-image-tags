@@ -31,22 +31,26 @@ def test_missing_data_root_raises(tmp_path: Path) -> None:
 
 
 def test_multihot_encoding_and_vocab_filter(tmp_path: Path) -> None:
-    """V0 顺序 multi-hot；词表外标签（官方图/未知）不进入目标与计数。"""
+    """V0 顺序 multi-hot；词表外标签（大水印/男角色/未知）不进入目标与计数。
+
+    2026-09-21 官方图并入 V0 词表（正样本 45 ≥ 30），目标向量 9 → 10 维。
+    """
     labels = _write_labels(
         tmp_path / "labels.json",
         [
             {"path": "a/1.jpg", "tags": ["灵魂", "NSFW", "官方图"]},
-            {"path": "a/2.jpg", "tags": ["删除", "小水印", "未知标签"]},
+            {"path": "a/2.jpg", "tags": ["删除", "小水印", "大水印", "未知标签"]},
         ],
         data_root=str(tmp_path),  # [tags/B-2] 显式传根，本用例不触盘
     )
     ds = TagsDataset(labels)
     assert len(ds) == 2
-    # V0 顺序: 灵魂 喜欢 一般 删除 无背景 漫画图 NSFW 小水印 低像素
-    assert torch.equal(ds.targets[0], torch.tensor([1, 0, 0, 0, 0, 0, 1, 0, 0], dtype=torch.float32))
-    assert torch.equal(ds.targets[1], torch.tensor([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=torch.float32))
+    # V0 顺序: 灵魂 喜欢 一般 删除 无背景 漫画图 NSFW 小水印 低像素 官方图
+    assert torch.equal(ds.targets[0], torch.tensor([1, 0, 0, 0, 0, 0, 1, 0, 0, 1], dtype=torch.float32))
+    assert torch.equal(ds.targets[1], torch.tensor([0, 0, 0, 1, 0, 0, 0, 1, 0, 0], dtype=torch.float32))
     assert ds.tag_counts["灵魂"] == 1
-    assert "官方图" not in ds.tag_counts  # 词表外不计数
+    assert ds.tag_counts["官方图"] == 1  # 已入 V0 词表，正常计数
+    assert "大水印" not in ds.tag_counts  # 词表外不计数
 
 
 def test_skip_missing_and_conflicting_preference(tmp_path: Path) -> None:

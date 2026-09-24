@@ -182,20 +182,37 @@ def test_pref_source_model_flat_dir(tmp_path: Path, monkeypatch) -> None:
     assert load_json(report2_path)["meta"]["pref_source"] == "model"
 
 
-def test_default_pref_source_is_model(tmp_path: Path, monkeypatch) -> None:
-    """默认（不传 --pref-source）即 model：即使 good/keep/trash 齐备也不目录映射。
+def test_default_pref_source_is_auto_dir(tmp_path: Path, monkeypatch) -> None:
+    """默认（不传 --pref-source）即 auto：三档目录齐备时走目录映射。
 
-    2026-09-21 拍板：目录是作者内相对排序，与喜好标签的全局语义有偏差
-    （953690 修正实证 38/38），喜好一律模型预测。
+    2026-09-21 二次拍板：模型喜好预测偏差远大于目录映射的语义偏差
+    （114299 修正实证），目录做预填先验、人工修正兜底。
     """
     root = _build_tree(tmp_path / "data")
     rc, report_path = _run_main(tmp_path, root, monkeypatch, extra=["--n-mc", "5"])
     assert rc == 0
     report = load_json(report_path)
-    assert report["meta"]["pref_source"] == "model"
-    for im in report["images"]:
-        if im["action"] == "prefilled":
-            assert im["chosen_tags"][0] == im["model_pref"]
+    assert report["meta"]["pref_source"] == "dir"
+    by_rel = {im["rel_path"]: im for im in report["images"]}
+    assert by_rel["good/good_0.png"]["chosen_tags"][0] == "喜欢"
+    assert by_rel["keep/keep_0.png"]["chosen_tags"][0] == "一般"
+    assert by_rel["trash/trash_0.png"]["chosen_tags"][0] == "删除"
+    # 目录未识别的平铺图回退 model argmax
+    assert by_rel["plain_0.jpg"]["chosen_tags"][0] == by_rel["plain_0.jpg"]["model_pref"]
+
+
+def test_negative_subsumption_rule() -> None:
+    """大小负面吞并：任一大负面（官方图）过阈时小负面全部让位。"""
+    from tags_predict import select_negative_tags
+
+    tags = list(V0_TRAIN_TAGS)  # 含官方图（2026-09-21 并入，10 tag）
+    assert "官方图" in tags
+    probs = {"官方图": 0.9, "无背景": 0.8, "NSFW": 0.7, "小水印": 0.75, "低像素": 0.8}
+    # 大负面入选 → 只留官方图
+    assert select_negative_tags(probs, tags, 0.5, 0.7) == ["官方图"]
+    # 无大负面 → 小负面按档位阈值组合
+    probs2 = {"官方图": 0.3, "无背景": 0.8, "NSFW": 0.7, "小水印": 0.75, "低像素": 0.6}
+    assert select_negative_tags(probs2, tags, 0.5, 0.7) == ["无背景", "NSFW", "小水印"]
 
 
 def test_same_seed_reproducible_probs(tmp_path: Path, monkeypatch) -> None:

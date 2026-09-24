@@ -14,6 +14,7 @@
 - 远程仓库：origin = git@github.com:bloodycrownD/custom-image-tags.git（跨机开发；笔记本侧 SSH 22 直连可用，台式机侧走 https，均指向同一仓库）。
 - 数据目录只读，所有产物写入 classify 仓库 data/ 下；例外：经用户指令把整个作者文件夹从 classification 图库移入 new/（主动学习循环的取材入口，2026-09-21 起沿用）。
 - 人工标注用 TagSpaces：标签写在文件名结尾的方括号组，多标签默认为单组内空格分隔（`2398_..._p0[无背景 一般].png`，逗号亦接受），无 sidecar 文件；训练数据用 tools/scan_tagspaces.py 扫描生成 labels.json，词表见 tags/vocab.py。
+- 负面标签分大小（2026-09-21 确立）：大负面（官方图/大水印）**独占**——出现时不再标任何小负面；小负面（无背景/漫画图/NSFW/小水印/低像素/男角色）之间可组合。权威定义见 tags/vocab.py 的 BIG_NEGATIVE_TAGS。
 - 打分输出协议以 checkpoint meta 为准（percentiles / u_threshold 等），工具读取而非重算。
 - tag 预处理对齐基模官方管线（WD：alpha 白底合成、白色 pad-to-square、bicubic、448px、mean/std 0.5）；rank 的黑填充 + ImageNet 归一化仅服务于 EfficientNet-B4，两套互不通用。
 - 训练环境：~/miniconda3/envs/classify（torch cu13 + timm）。网络：PyPI 走清华镜像直连，HuggingFace 走 clash 代理 127.0.0.1:7890（直连被墙）。

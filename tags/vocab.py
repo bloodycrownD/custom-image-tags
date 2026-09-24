@@ -22,13 +22,20 @@ NEGATIVE_TAGS: tuple[str, ...] = (
 
 ALL_TAGS: tuple[str, ...] = PREFERENCE_TAGS + NEGATIVE_TAGS
 
-# v0 进入训练的 tag；官方图/大水印/男角色正样本 <30，暂不进损失
+# 负面标签大小约定（2026-09-21 用户修正 114299 后确立）：
+# 大负面（官方图/大水印）独占——出现时不再标任何小负面；
+# 小负面（无背景/漫画图/NSFW/小水印/低像素/男角色）之间可组合。
+BIG_NEGATIVE_TAGS: frozenset[str] = frozenset({"官方图", "大水印"})
+
+# v0 进入训练的 tag；官方图 2026-09-21 并入（正样本 45 ≥ 30 门槛，
+# 且属"大负面"，见下方大小负面约定）；大水印(4)/男角色(13) 仍 <30 暂不进损失
 V0_TRAIN_TAGS: tuple[str, ...] = PREFERENCE_TAGS + (
     "无背景",
     "漫画图",
     "NSFW",
     "小水印",
     "低像素",
+    "官方图",
 )
 
 PREFERENCE_SET = frozenset(PREFERENCE_TAGS)

@@ -8,15 +8,17 @@
 ``--apply`` 才真正重命名文件。
 
 打标策略：
-- 喜好 4 tag 互斥单选：**默认由模型 argmax 预测**（pref-source=model）。
-  注意：good/keep/trash 目录是**作者内相对排序**，与喜好标签的**全局绝对值**
-  语义有偏差（水平一般的作者，good 图全局也可能只是"一般"，2026-09-21
-  953690 修正实证 38/38），故目录映射不再是默认，仅可 --pref-source dir
-  显式启用；auto=三档目录齐备走 dir、否则回退 model，亦为显式选项；
+- 喜好 4 tag 互斥单选：pref-source=auto（默认）在 good/keep/trash 三档目录
+  齐备时用目录映射（good→喜欢/keep→一般/trash→删除），否则回退 model argmax。
+  教训记录：目录是作者内相对排序、与全局喜好有语义偏差（953690 实证 38/38），
+  但模型喜好预测偏差更大（114299 修正实证远差于目录）——两害相权目录是更好
+  的预填先验，最终以人工修正为准；dir/model 为显式选项；
   dir 模式下目录未识别的图回退 model argmax，「灵魂」无目录对应——
   模型倾向灵魂的 good 图仅列入 soul_candidates 供人工补标；
-- 负面 5 tag 多选：mean prob ≥ 阈值入选；强档（无背景/漫画图/NSFW）
+- 负面 5 tag 多选：mean prob ≥ 阈值入选；强档（无背景/漫画图/NSFW/官方图）
   默认 0.5，弱档（小水印/低像素，v0 排序辅助档）保守取 max(阈值, 0.7)；
+  **大小负面吞并**：官方图/大水印属大负面（独占），任一大负面入选时
+  小负面全部让位（2026-09-21 用户修正 114299 后确立的标注约定）；
 - 文件名格式 ``{原stem}[{tag1} {tag2}]{原扩展名}``（方括号前无空格，
   喜好 tag 在前、负面按 V0_TRAIN_TAGS 顺序）。
 
@@ -60,6 +62,7 @@ from tags import (
     load_wd_pretrained,
     parse_filename,
 )
+from tags.vocab import BIG_NEGATIVE_TAGS
 from tools import iter_images_under, rel_posix_path, save_json, utc_now_iso
 
 DEFAULT_CHECKPOINT = Path("models/tags/v0_best.pth")
@@ -68,8 +71,9 @@ DEFAULT_REPORT = Path("data/classification/tags_prefill_report.json")
 # MC 协议默认值（记忆约定：n_mc 20~50；cudnn.deterministic）
 DEFAULT_N_MC = 20
 DEFAULT_SEED = 42
-# 喜好来源默认模型预测（目录映射语义偏差，见模块 docstring；dir/auto 仅显式选用）
-DEFAULT_PREF_SOURCE = "model"
+# 喜好来源默认 auto：目录映射做预填先验（好于模型喜好预测，114299 实证），
+# 三档目录齐备走 dir、否则回退 model；语义偏差由人工修正兜底
+DEFAULT_PREF_SOURCE = "auto"
 # 每图 MC 种子 = seed * 1_000_003 + 全枚举顺序索引（大素数乘子拉开相邻图种子）
 MC_SEED_STRIDE = 1_000_003
 # good/keep/trash 三分类目录（rank 链约定）→ 喜好 tag 映射
@@ -78,6 +82,25 @@ DIR_TO_PREF = {"good": "喜欢", "keep": "一般", "trash": "删除"}
 NEG_STRONG_THRESHOLD = 0.5
 NEG_WEAK_TAGS = frozenset({"小水印", "低像素"})
 NEG_WEAK_FLOOR = 0.7
+
+
+def select_negative_tags(
+    probs: dict[str, float], tag_list: list[str], strong_th: float, weak_th: float
+) -> list[str]:
+    """按阈值选负面 tag，并应用大小负面吞并。
+
+    任一大负面（官方图/大水印，见 tags/vocab.py BIG_NEGATIVE_TAGS）入选时，
+    小负面全部让位——用户 2026-09-21 确立的标注约定：大负面独占。
+    """
+    negs = [
+        tag
+        for tag in tag_list
+        if tag not in PREFERENCE_SET
+        and probs.get(tag, 0.0) >= (weak_th if tag in NEG_WEAK_TAGS else strong_th)
+    ]
+    if any(tag in BIG_NEGATIVE_TAGS for tag in negs):
+        negs = [tag for tag in negs if tag in BIG_NEGATIVE_TAGS]
+    return negs
 
 
 def load_config(path: Path) -> dict:
@@ -281,17 +304,9 @@ def run_tags_predict(
     for rec in pending:
         probs = rec["probs"]
         assert probs is not None
-        # 喜好：dir 模式优先目录映射，目录未识别的图回退模型 argmax
-        if effective_source == "dir" and rec["dir_pref"] is not None:
-            chosen_pref = rec["dir_pref"]
-        else:
-            chosen_pref = rec["model_pref"]
-        rec["chosen_tags"] = [chosen_pref] + [
-            tag
-            for tag in tag_list
-            if tag not in PREFERENCE_SET
-            and probs[tag] >= (weak_th if tag in NEG_WEAK_TAGS else strong_th)
-        ]
+        chosen_pref = rec["dir_pref"] if effective_source == "dir" and rec["dir_pref"] else rec["model_pref"]
+        assert chosen_pref is not None
+        rec["chosen_tags"] = [chosen_pref] + select_negative_tags(probs, tag_list, strong_th, weak_th)
         # 灵魂候选：dir 模式下 good 无「灵魂」对应，模型倾向灵魂的交人工补标
         if effective_source == "dir" and rec["dir_pref"] == "喜欢" and (
             rec["model_pref"] == "灵魂" or probs["灵魂"] >= 0.5
@@ -439,9 +454,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="真正执行重命名（缺省 dry-run 只出报告）",
     )
     parser.add_argument(
-        "--pref-source", choices=("model", "dir", "auto"), default=None,
-        help="喜好 tag 来源（默认 model=模型 argmax 预测；dir=good/keep/trash 目录映射，"
-             "注意目录是作者内相对排序与全局喜好语义有偏差；auto=三档目录齐备走 dir）",
+        "--pref-source", choices=("auto", "dir", "model"), default=None,
+        help="喜好 tag 来源（默认 auto：三档目录齐备走 dir 目录映射，否则 model argmax；"
+             "目录预填先验好于模型喜好预测，最终以人工修正为准）",
     )
     parser.add_argument(
         "--neg-threshold", type=float, default=None,
