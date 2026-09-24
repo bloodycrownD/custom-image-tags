@@ -8,13 +8,13 @@
 ``--apply`` 才真正重命名文件。
 
 打标策略：
-- 喜好 4 tag 互斥单选：pref-source=auto（默认）在 good/keep/trash 三档目录
-  齐备时用目录映射（good→喜欢/keep→一般/trash→删除），否则回退 model argmax。
-  教训记录：目录是作者内相对排序、与全局喜好有语义偏差（953690 实证 38/38），
-  但模型喜好预测偏差更大（114299 修正实证远差于目录）——两害相权目录是更好
-  的预填先验，最终以人工修正为准；dir/model 为显式选项；
-  dir 模式下目录未识别的图回退 model argmax，「灵魂」无目录对应——
-  模型倾向灵魂的 good 图仅列入 soul_candidates 供人工补标；
+- 喜好 4 tag 互斥单选：**默认由模型 argmax 预测**（pref-source=model）。
+  拍板演变（2026-09-21 三轮）：目录映射（good→喜欢/keep→一般/trash→删除）
+  曾两次作默认——它是作者内相对排序、与喜好标签的全局语义有偏差（953690
+  实证 38/38），且目录预填会掩盖模型真实水平、稀释喜好档的修正信号；
+  最终定调完全依靠模型预估喜好，dir/auto 仅保留为显式选项（auto=三档
+  目录齐备走 dir、否则 model）；dir 模式下目录未识别的图回退 model argmax，
+  「灵魂」无目录对应——模型倾向灵魂的 good 图仅列入 soul_candidates 供人工补标；
 - 负面 5 tag 多选：mean prob ≥ 阈值入选；强档（无背景/漫画图/NSFW/官方图）
   默认 0.5，弱档（小水印/低像素，v0 排序辅助档）保守取 max(阈值, 0.7)；
   **大小负面吞并**：官方图/大水印属大负面（独占），任一大负面入选时
@@ -71,9 +71,9 @@ DEFAULT_REPORT = Path("data/classification/tags_prefill_report.json")
 # MC 协议默认值（记忆约定：n_mc 20~50；cudnn.deterministic）
 DEFAULT_N_MC = 20
 DEFAULT_SEED = 42
-# 喜好来源默认 auto：目录映射做预填先验（好于模型喜好预测，114299 实证），
-# 三档目录齐备走 dir、否则回退 model；语义偏差由人工修正兜底
-DEFAULT_PREF_SOURCE = "auto"
+# 喜好来源最终定调（2026-09-21 第三轮拍板）：完全依靠模型 argmax 预估——
+# 目录映射有作者相对性语义偏差，且会掩盖模型真实水平、稀释喜好档修正信号
+DEFAULT_PREF_SOURCE = "model"
 # 每图 MC 种子 = seed * 1_000_003 + 全枚举顺序索引（大素数乘子拉开相邻图种子）
 MC_SEED_STRIDE = 1_000_003
 # good/keep/trash 三分类目录（rank 链约定）→ 喜好 tag 映射
@@ -454,9 +454,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="真正执行重命名（缺省 dry-run 只出报告）",
     )
     parser.add_argument(
-        "--pref-source", choices=("auto", "dir", "model"), default=None,
-        help="喜好 tag 来源（默认 auto：三档目录齐备走 dir 目录映射，否则 model argmax；"
-             "目录预填先验好于模型喜好预测，最终以人工修正为准）",
+        "--pref-source", choices=("model", "dir", "auto"), default=None,
+        help="喜好 tag 来源（默认 model=完全依靠模型预估；dir=good/keep/trash 目录映射，"
+             "注意目录是作者内相对排序与全局喜好语义有偏差；auto=三档目录齐备走 dir）",
     )
     parser.add_argument(
         "--neg-threshold", type=float, default=None,

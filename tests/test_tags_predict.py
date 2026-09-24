@@ -134,7 +134,9 @@ def test_dry_run_keeps_names_and_report(tmp_path: Path, monkeypatch) -> None:
 def test_apply_renames_and_parse_back(tmp_path: Path, monkeypatch) -> None:
     """--apply：改名后 parse_filename 读回标签、扩展名保留、good 目录映射正确。"""
     root = _build_tree(tmp_path / "data")
-    rc, report_path = _run_main(tmp_path, root, monkeypatch, extra=["--apply", "--n-mc", "3"])
+    rc, report_path = _run_main(
+        tmp_path, root, monkeypatch, extra=["--apply", "--n-mc", "3", "--pref-source", "dir"]
+    )
     assert rc == 0
     report = load_json(report_path)
     assert report["meta"]["mode"] == "apply"
@@ -182,23 +184,24 @@ def test_pref_source_model_flat_dir(tmp_path: Path, monkeypatch) -> None:
     assert load_json(report2_path)["meta"]["pref_source"] == "model"
 
 
-def test_default_pref_source_is_auto_dir(tmp_path: Path, monkeypatch) -> None:
-    """默认（不传 --pref-source）即 auto：三档目录齐备时走目录映射。
+def test_default_pref_source_is_model(tmp_path: Path, monkeypatch) -> None:
+    """默认（不传 --pref-source）即 model：喜好完全依靠模型预估。
 
-    2026-09-21 二次拍板：模型喜好预测偏差远大于目录映射的语义偏差
-    （114299 修正实证），目录做预填先验、人工修正兜底。
+    2026-09-21 第三轮拍板（最终定调）：目录映射预填弃用——作者相对性
+    语义偏差 + 掩盖模型真实水平，喜好档的进步靠模型裸跑拿修正信号。
     """
     root = _build_tree(tmp_path / "data")
     rc, report_path = _run_main(tmp_path, root, monkeypatch, extra=["--n-mc", "5"])
     assert rc == 0
     report = load_json(report_path)
-    assert report["meta"]["pref_source"] == "dir"
+    assert report["meta"]["pref_source"] == "model"
     by_rel = {im["rel_path"]: im for im in report["images"]}
-    assert by_rel["good/good_0.png"]["chosen_tags"][0] == "喜欢"
-    assert by_rel["keep/keep_0.png"]["chosen_tags"][0] == "一般"
-    assert by_rel["trash/trash_0.png"]["chosen_tags"][0] == "删除"
-    # 目录未识别的平铺图回退 model argmax
-    assert by_rel["plain_0.jpg"]["chosen_tags"][0] == by_rel["plain_0.jpg"]["model_pref"]
+    # 三档目录齐备也不用目录映射：喜好一律 model argmax
+    for im in report["images"]:
+        if im["action"] == "prefilled":
+            assert im["chosen_tags"][0] == im["model_pref"]
+    assert "agreement" not in report  # 仅 dir 模式给一致率
+    assert by_rel["good/good_0.png"]["dir_pref"] == "喜欢"  # dir_pref 字段仍如实记录
 
 
 def test_negative_subsumption_rule() -> None:
