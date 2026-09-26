@@ -13,7 +13,7 @@ import pytest
 import torch
 import yaml
 
-from tags.features import FEATURES_CACHE_VERSION, count_bad_images
+from tags.features import FEATURES_CACHE_VERSION, META_DIM, count_bad_images
 from tags.train import (
     average_precision,
     compute_pos_weight,
@@ -79,7 +79,12 @@ def _make_config() -> dict:
 
 
 def _run(
-    tmp_path: Path, *, feature_cache: Path, epochs: int, img_size: int = IMG_SIZE
+    tmp_path: Path,
+    *,
+    feature_cache: Path,
+    epochs: int,
+    img_size: int = IMG_SIZE,
+    extra_config: dict | None = None,
 ) -> tuple[int, Path, Path]:
     """搭建数据并跑一次完整入口，返回 (返回码, checkpoint, report)。"""
     data_root = tmp_path / "data"
@@ -88,8 +93,11 @@ def _run(
     labels_path = _write_labels(tmp_path / "labels.json", images, data_root)
     checkpoint_path = tmp_path / "models" / "tags_v0_best.pth"
     report_path = tmp_path / "tags_v0_report.json"
+    config = _make_config()
+    if extra_config:
+        config.update(extra_config)
     rc = run_tags_training(
-        _make_config(),
+        config,
         labels_path=labels_path,
         data_root=data_root,
         checkpoint_path=checkpoint_path,
@@ -111,7 +119,7 @@ def test_v0_pipeline_smoke(tmp_path: Path) -> None:
     assert checkpoint_path.is_file()
     assert report_path.is_file()
 
-    # checkpoint 重建：resnet18 骨干 + 头权重，前向输出 9 维 logits
+    # checkpoint 重建：resnet18 骨干 + 元数据特征 + 头权重，前向输出 tag 数维 logits
     model, payload = load_v0_checkpoint(checkpoint_path, "cpu")
     assert payload["format"] == "tags_v0"
     assert payload["arch"] == ARCH
@@ -119,6 +127,9 @@ def test_v0_pipeline_smoke(tmp_path: Path) -> None:
     assert payload["tag_list"] == list(V0_TRAIN_TAGS)
     assert "per_tag_metrics" in payload and "pos_weight" in payload
     assert payload["backbone_weights"] is None
+    # 元数据特征默认关闭（2026-09-25 受控实验结论）：头部只用骨干特征
+    assert payload["meta_dim"] == 0
+    assert payload.get("meta_norm") is None
     with torch.no_grad():
         logits = model(torch.randn(2, 3, IMG_SIZE, IMG_SIZE))
     assert logits.shape == (2, len(V0_TRAIN_TAGS))
@@ -367,3 +378,30 @@ def test_main_output_paths_fall_back_to_config(tmp_path: Path) -> None:
     assert checkpoint.is_file() and report_path.is_file()
     report = load_json(report_path)
     assert report["checkpoint"] == str(checkpoint)
+
+
+def test_meta_features_pipeline_when_enabled(tmp_path: Path) -> None:
+    """use_meta_features=true：meta_dim=4、meta_norm 齐全、带元数据前向可用。
+
+    该通道在 2026-09-25 受控实验中无收益（默认关闭）；本测试锁定实现正确性，
+    以防将来数据规模变化重启用时发生回归。
+    """
+    rc, checkpoint_path, _ = _run(
+        tmp_path,
+        feature_cache=tmp_path / "features.pt",
+        epochs=2,
+        extra_config={"use_meta_features": True},
+    )
+    assert rc == 0
+    model, payload = load_v0_checkpoint(checkpoint_path, "cpu")
+    assert payload["meta_dim"] == META_DIM
+    assert len(payload["meta_norm"]["mean"]) == META_DIM
+    with torch.no_grad():
+        logits = model(torch.randn(2, 3, IMG_SIZE, IMG_SIZE), torch.zeros(2, META_DIM))
+    assert logits.shape == (2, len(V0_TRAIN_TAGS))
+    # 未传元数据应给出明确错误而非形状炸裂
+    try:
+        model(torch.randn(2, 3, IMG_SIZE, IMG_SIZE))
+        raise AssertionError("应因缺少元数据特征报错")
+    except ValueError:
+        pass

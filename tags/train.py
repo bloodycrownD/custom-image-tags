@@ -281,6 +281,8 @@ def save_v0_checkpoint(
     history: list[dict[str, float]] | None = None,
     per_tag_metrics: dict[str, dict[str, Any]] | None = None,
     tag_thresholds: dict[str, float] | None = None,
+    meta_dim: int = 0,
+    meta_norm: dict[str, list[float]] | None = None,
 ) -> dict[str, Any]:
     """保存 v0 头 checkpoint（仅头权重 + 重建元信息，不含骨干权重）。
 
@@ -310,6 +312,10 @@ def save_v0_checkpoint(
         payload["per_tag_metrics"] = per_tag_metrics
     if tag_thresholds is not None:
         payload["tag_thresholds"] = tag_thresholds
+    # 元数据特征协议：头输入 = 骨干特征 + meta_dim 维元数据（推理侧按 meta_norm 归一）
+    payload["meta_dim"] = int(meta_dim)
+    if meta_norm is not None:
+        payload["meta_norm"] = meta_norm
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,6 +344,7 @@ def load_v0_checkpoint(
         len(tag_list),
         pretrained=False,
         dropout=float(payload.get("dropout", 0.1)),
+        extra_features=int(payload.get("meta_dim", 0)),
     )
     model.head.load_state_dict(payload["head_state_dict"])
     model.to(torch.device(device))

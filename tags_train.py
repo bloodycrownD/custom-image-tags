@@ -23,7 +23,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from tags.dataset import TagsDataset, stratified_split_tags
-from tags.features import FeatureDataset, precompute_features
+from tags.features import META_DIM, FeatureDataset, precompute_features
 from tags.model import WD_ARCH, TagModel, load_wd_pretrained
 from tags.train import (
     TrainResult,
@@ -84,6 +84,7 @@ def run_tags_training(
     feature_cache: Path | str | None = None,
     backbone_weights: Path | None = None,
     device: str | None = None,
+    use_meta_features: bool | None = None,
 ) -> int:
     """执行 v0 完整训练流程，成功返回 0、失败返回 2。
 
@@ -102,6 +103,13 @@ def run_tags_training(
     val_ratio = float(val_ratio if val_ratio is not None else config.get("val_ratio", 0.15))
     seed = int(seed if seed is not None else config.get("seed", 42))
     dropout = float(config.get("dropout", 0.1))
+    # 元数据特征开关（分辨率/清晰度/压缩率接入头部）；关闭时头输入退化为纯骨干特征。
+    # 默认关闭：2026-09-25 受控实验（3 种子×开关 + OOF 诚实评估）证明该通道对
+    # 现有标签（尤其低像素）无可测收益——低像素的模型输出折外 AUC≈0.5（等于瞎猜），
+    # 可计算上限仅 AUC≈0.75；开关保留，待数据规模或标签需求变化时重评
+    use_meta = (
+        bool(config.get("use_meta_features", False)) if use_meta_features is None else use_meta_features
+    )
     dl_cfg = config.get("dataloader", {})
     num_workers = int(dl_cfg.get("num_workers", 0))
     if feature_cache is None:
@@ -150,7 +158,9 @@ def run_tags_training(
     torch.manual_seed(seed)
 
     # 3) 构建冻结骨干（可选加载 WD 预训练权重）并预计算特征
-    model = TagModel(arch, len(dataset.tag_list), pretrained=False, dropout=dropout)
+    # 头输入 = 骨干特征 +（可选）META_DIM 维元数据特征（分辨率/清晰度/压缩率）
+    meta_dim = META_DIM if use_meta else 0
+    model = TagModel(arch, len(dataset.tag_list), pretrained=False, dropout=dropout, extra_features=meta_dim)
     if backbone_weights is not None:
         backbone_weights = Path(backbone_weights)
         if not backbone_weights.is_file():
@@ -163,7 +173,7 @@ def run_tags_training(
         print("警告: 未加载骨干权重，使用随机骨干")
     model.to(dev)
 
-    features = precompute_features(
+    features, meta, meta_mean, meta_std = precompute_features(
         model,
         dataset,
         cache_path=feature_cache,
@@ -173,9 +183,10 @@ def run_tags_training(
         arch=arch,
     )
 
-    # 4) 特征子集 + per-tag pos_weight（只按训练 split 统计）
-    train_set = FeatureDataset(features, dataset.targets, train_indices)
-    val_set = FeatureDataset(features, dataset.targets, val_indices)
+    # 4) 特征子集（骨干特征 + 归一化元数据特征拼接）+ per-tag pos_weight（只按训练 split 统计）
+    meta_kwargs = {"meta": meta, "meta_mean": meta_mean, "meta_std": meta_std} if use_meta else {}
+    train_set = FeatureDataset(features, dataset.targets, train_indices, **meta_kwargs)
+    val_set = FeatureDataset(features, dataset.targets, val_indices, **meta_kwargs)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=0)
     pos_weight = compute_pos_weight(dataset.targets[train_indices])
@@ -189,6 +200,9 @@ def run_tags_training(
         "dropout": dropout,
         "pos_weight": pos_weight,
         "backbone_weights": backbone_weights_str,
+        # 元数据特征协议：头输入 = 骨干特征 + 元数据（推理侧按 meta_norm 归一）
+        "meta_dim": meta_dim,
+        "meta_norm": {"mean": meta_mean.tolist(), "std": meta_std.tolist()} if use_meta else None,
     }
 
     # 5) 线性头训练（best 时覆盖写基础版 checkpoint）
@@ -288,6 +302,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-out", type=Path, default=None, help="输出 checkpoint 路径（缺省回退 config 的 checkpoint_out）")
     parser.add_argument("--report-out", type=Path, default=None, help="输出报告 json 路径（缺省回退 config 的 report_out）")
     parser.add_argument("--device", type=str, default=None, help="设备：auto / cpu / cuda")
+    parser.add_argument(
+        "--no-meta-features", action="store_true",
+        help="关闭元数据特征（头输入只用骨干特征，用于受控对比实验）",
+    )
     return parser
 
 
@@ -321,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         feature_cache=args.feature_cache,
         backbone_weights=args.backbone_weights,
         device=args.device,
+        use_meta_features=(False if args.no_meta_features else None),
     )
 
 

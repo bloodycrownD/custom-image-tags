@@ -65,6 +65,7 @@ from tags import (
     parse_filename,
 )
 from tags.vocab import BIG_NEGATIVE_TAGS
+from tags.features import compute_meta_features
 from tools import iter_images_under, rel_posix_path, save_json, utc_now_iso
 
 DEFAULT_CHECKPOINT = Path("models/tags/v0_best.pth")
@@ -242,6 +243,18 @@ def run_tags_predict(
         )
         return 2
     img_size = int(payload["img_size"])  # 预处理边长以 checkpoint 为准
+    # 元数据特征协议（2026-09-25）：头输入 = 骨干特征 + meta_dim 维元数据，
+    # 推理侧按 checkpoint meta 的 meta_norm 同口径归一化（与训练一致）
+    meta_dim = int(payload.get("meta_dim", 0))
+    meta_norm = payload.get("meta_norm") if meta_dim else None
+    head_in = int(model.head[-1].in_features)
+    if head_in != int(model.backbone.num_features) + meta_dim:
+        print(
+            f"ERROR: 头输入维度自检失败: head={head_in} vs "
+            f"骨干 {model.backbone.num_features} + 元数据 {meta_dim}",
+            file=sys.stderr,
+        )
+        return 2
     # 频次匹配校准阈值（训练时按验证集写入 meta）；显式 --neg-threshold 时
     # 负面侧以用户值为准（喜好侧校准不受影响）
     calibrated = payload.get("tag_thresholds")
@@ -286,6 +299,11 @@ def run_tags_predict(
             rec["action"] = "skipped_existing"  # 结尾已有标签（含未知标签）不覆盖
             records.append(rec)
             continue
+        meta_row = compute_meta_features(path) if meta_dim else None
+        if meta_dim and meta_row is None:
+            rec["action"] = "skipped_bad"  # 元数据无法计算（坏图）
+            records.append(rec)
+            continue
         try:
             tensor = preprocess(load_rgb_white_background(path))
         except Exception:
@@ -293,6 +311,7 @@ def run_tags_predict(
             records.append(rec)
             continue
         rec["tensor"] = tensor
+        rec["meta"] = meta_row
         records.append(rec)
         pending.append(rec)
 
@@ -312,6 +331,11 @@ def run_tags_predict(
     # 溢出（极慢+OOM），fp16 稳定且更快；特征转回 fp32 供 head 使用。
     # 必须 no_grad：否则 autograd 保留整网激活图（实测 ~20GB，必 OOM）。
     use_amp = dev.type == "cuda"
+    if meta_dim and isinstance(meta_norm, dict):
+        meta_mean_t = torch.tensor(list(meta_norm.get("mean", [0.0] * meta_dim)), dtype=torch.float32)
+        meta_std_t = torch.tensor(list(meta_norm.get("std", [1.0] * meta_dim)), dtype=torch.float32).clamp_min(1e-6)
+    else:
+        meta_mean_t = meta_std_t = None  # 类型: torch.Tensor | None
     with torch.no_grad():
         for start in tqdm(range(0, len(pending), batch_size), desc="提取骨干特征", unit="batch"):
             chunk = pending[start : start + batch_size]
@@ -320,6 +344,11 @@ def run_tags_predict(
                 feats = model.backbone(batch)
             feats = feats.float().cpu()
             for rec, feat in zip(chunk, feats.unbind(0)):
+                if meta_dim:
+                    m = torch.tensor(rec.pop("meta", None) or [0.0] * meta_dim, dtype=torch.float32)
+                    if meta_mean_t is not None and meta_std_t is not None:
+                        m = (m - meta_mean_t) / meta_std_t
+                    feat = torch.cat([feat, m])
                 rec["feat"] = feat
 
     # ---- MC dropout：每图独立种子，只循环 head ----
@@ -415,6 +444,7 @@ def run_tags_predict(
             "pref_source": effective_source,
             "neg_thresholds": {"strong": strong_th, "weak": weak_th},
             "calibrated_thresholds": calibrated or {},
+            "meta_dim": meta_dim,
             "created": utc_now_iso(),
         },
     }

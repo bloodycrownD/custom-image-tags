@@ -23,6 +23,9 @@ dropout: 0.1                  # TagModel 头内 Dropout
 epochs: 100
 early_stop_patience: 10       # val loss 连续不降的早停轮数
 
+# 元数据特征（分辨率/清晰度/压缩率接入头部）：受控实验证明无收益，默认关闭
+use_meta_features: false
+
 # 划分与复现
 val_ratio: 0.15               # 按喜好组分层抽样的验证集比例
 seed: 42

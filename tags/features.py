@@ -1,16 +1,23 @@
 """冻结骨干特征预计算与缓存。
 
-EVA02-L 骨干在 v0 阶段全程冻结：一次前向把 453 张图编码为 (N, 1024) fp16
+EVA02-L 骨干在 v0 阶段全程冻结：一次前向把 953 张图编码为 (N, 1024) fp16
 特征矩阵（约 1MB）落盘缓存，此后线性头训练/评估只读缓存，不再触碰图片与骨干。
-缓存键为 (arch, img_size, 路径列表顺序, 特征维度)，任一不匹配即重算覆盖。
+缓存键为 (version, arch, img_size, 路径列表顺序, 特征维度)，任一不匹配即重算覆盖。
+
+v2（2026-09-25）新增 4 维元数据特征（log像素/log短边/log清晰度/压缩率）：
+原图分辨率在 448 预处理中被销毁，模型对"低像素"类标签结构性失明，元数据
+特征补上这一通道；附训练集均值/标准差用于推理侧同口径归一化。
 """
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
+from PIL import Image, ImageFilter
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -18,7 +25,36 @@ from tags.dataset import TagsDataset
 from tags.model import TagModel
 from tags.preprocess import load_rgb_white_background
 
-FEATURES_CACHE_VERSION = 1
+FEATURES_CACHE_VERSION = 2
+# 元数据特征维度：[log像素, log短边, log1p(清晰度), 字节/像素]
+META_DIM = 4
+# 清晰度测量的归一化短边上限（超过则缩放，使 lap_var 与源尺寸解耦）
+_SHARPNESS_NORM_SIDE = 512
+_LAPLACIAN_KERNEL = [0, 1, 0, 1, -4, 1, 0, 1, 0]
+
+
+def compute_meta_features(path: Path | str) -> list[float] | None:
+    """计算单图 4 维元数据特征：[log像素, log短边, log1p(清晰度), 字节/像素]。
+
+    清晰度为归一化短边≤512 后的灰度 Laplacian 方差（模糊/放大的代理指标，
+    2026-09-25 低像素标签分析：单指标 AUC 0.67~0.70，组合后逻辑回归 CV
+    AUC 0.75）；字节/像素为压缩率代理。解码失败返回 None（调用方以 0 占位）。
+    """
+    try:
+        p = Path(path)
+        size_bytes = p.stat().st_size
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            w, h = im.size
+            scale = _SHARPNESS_NORM_SIDE / min(w, h) if min(w, h) > _SHARPNESS_NORM_SIDE else 1.0
+            if scale < 1.0:
+                im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.BICUBIC)
+            gray = im.convert("L")
+            lap = gray.filter(ImageFilter.Kernel((3, 3), _LAPLACIAN_KERNEL, scale=1, offset=0))
+            lap_var = float(np.asarray(lap, dtype=np.float32).var())
+        return [math.log(w * h), math.log(min(w, h)), math.log1p(lap_var), size_bytes / (w * h)]
+    except Exception:
+        return None
 
 
 def count_bad_images(data_root: Path | str, paths: list[str]) -> list[str]:
@@ -44,8 +80,8 @@ def _load_feature_cache(
     arch: str,
     img_size: int,
     num_features: int,
-) -> torch.Tensor | None:
-    """校验并加载特征缓存；键不匹配或文件损坏时返回 None（由调用方重算）。"""
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None:
+    """校验并加载特征缓存（含元数据特征与归一化统计）；不匹配返回 None。"""
     if not cache_path.is_file():
         return None
     try:
@@ -66,11 +102,16 @@ def _load_feature_cache(
     if not all(checks):
         return None
     features = payload.get("features")
-    if not isinstance(features, torch.Tensor):
+    meta = payload.get("meta_features")
+    meta_mean = payload.get("meta_mean")
+    meta_std = payload.get("meta_std")
+    if not all(isinstance(t, torch.Tensor) for t in (features, meta, meta_mean, meta_std)):
         return None
     if features.shape != (len(dataset), num_features):
         return None
-    return features
+    if meta.shape != (len(dataset), META_DIM):
+        return None
+    return features, meta, meta_mean, meta_std
 
 
 @torch.no_grad()
@@ -83,9 +124,11 @@ def precompute_features(
     device: torch.device | str | None = None,
     num_workers: int = 0,
     arch: str | None = None,
-) -> torch.Tensor:
-    """用冻结骨干批量提取特征，返回 (N, F) fp16 张量。
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """用冻结骨干批量提取特征，返回 (特征, 元数据, 元数据均值, 元数据标准差)。
 
+    特征为 (N, F) fp16；元数据为 (N, META_DIM) fp32 原始值，均值/标准差供
+    训练与推理两侧同口径归一化（推理侧从 checkpoint meta 读取同值）。
     坏图以全白占位提取（不中断流程），提取前显式统计个数并打印；
     cache_path 存在且缓存键匹配时直接复用并跳过重算。
 
@@ -97,7 +140,8 @@ def precompute_features(
             但换骨干不会自动失效，生产入口应显式传入）。
 
     Returns:
-        (N, num_features) fp16 特征矩阵，行序与 dataset.paths 一致。
+        (features(N,F) fp16, meta(N,4) fp32, meta_mean(4,), meta_std(4,))，
+        行序与 dataset.paths 一致。
     """
     device = torch.device(device) if device is not None else next(model.parameters()).device
     num_features = model.backbone.num_features
@@ -108,8 +152,9 @@ def precompute_features(
             Path(cache_path), dataset, arch=cache_key_arch, img_size=dataset.img_size, num_features=num_features
         )
         if cached is not None:
-            print(f"命中特征缓存: {cache_path}（{tuple(cached.shape)}, {cached.dtype}），跳过重算")
-            return cached
+            features, meta, meta_mean, meta_std = cached
+            print(f"命中特征缓存: {cache_path}（{tuple(features.shape)}, {features.dtype}），跳过重算")
+            return features, meta, meta_mean, meta_std
 
     bad_paths = count_bad_images(dataset.data_root, dataset.paths)
     if bad_paths:
@@ -132,6 +177,15 @@ def precompute_features(
     features_all = torch.cat(chunks, dim=0)
     assert features_all.shape == (len(dataset), num_features)
 
+    # 元数据特征（分辨率/清晰度/压缩率）：需原图，单独一遍解码
+    meta_rows: list[list[float]] = []
+    for rel in tqdm(dataset.paths, desc="元数据特征", unit="img"):
+        row = compute_meta_features(dataset.data_root / rel)
+        meta_rows.append(row if row is not None else [0.0] * META_DIM)
+    meta = torch.tensor(meta_rows, dtype=torch.float32)
+    meta_mean = meta.mean(dim=0)
+    meta_std = meta.std(dim=0).clamp_min(1e-6)
+
     if cache_path is not None:
         cache_path = Path(cache_path)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,30 +196,52 @@ def precompute_features(
             "num_features": num_features,
             "paths": dataset.paths,
             "features": features_all,
+            "meta_features": meta,
+            "meta_mean": meta_mean,
+            "meta_std": meta_std,
         }
         torch.save(payload, cache_path)
-        print(f"已写入特征缓存: {cache_path}（{tuple(features_all.shape)}, fp16）")
-    return features_all
+        print(f"已写入特征缓存: {cache_path}（{tuple(features_all.shape)}, fp16 + 元数据 {META_DIM} 维）")
+    return features_all, meta, meta_mean, meta_std
 
 
 class FeatureDataset(Dataset):
-    """预计算特征 + multi-hot 目标，供线性头训练与评估。
+    """预计算特征 + 元数据特征 + multi-hot 目标，供线性头训练与评估。
 
     Args:
         features: (N, F) 特征矩阵（fp16；__getitem__ 时转 float32）。
         targets: (N, T) multi-hot 矩阵，行序与 features 一致。
         indices: 本子集使用的样本索引（来自分层划分）。
+        meta: (N, META_DIM) 元数据原始值；None 表示不附加（向后兼容）。
+        meta_mean/meta_std: 元数据归一化统计（训练集口径）。
     """
 
-    def __init__(self, features: torch.Tensor, targets: torch.Tensor, indices: list[int]):
+    def __init__(
+        self,
+        features: torch.Tensor,
+        targets: torch.Tensor,
+        indices: list[int],
+        *,
+        meta: torch.Tensor | None = None,
+        meta_mean: torch.Tensor | None = None,
+        meta_std: torch.Tensor | None = None,
+    ):
         assert features.shape[0] == targets.shape[0]
         self.features = features
         self.targets = targets
         self.indices = list(indices)
+        self.meta = meta
+        self.meta_mean = meta_mean
+        self.meta_std = meta_std
 
     def __len__(self) -> int:
         return len(self.indices)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         source = self.indices[index]
-        return self.features[source].float(), self.targets[source]
+        feat = self.features[source].float()
+        if self.meta is not None:
+            # 归一化用训练集统计（推理侧从 checkpoint meta 读同值，保证同口径）
+            m = (self.meta[source] - self.meta_mean) / self.meta_std
+            feat = torch.cat([feat, m])
+        return feat, self.targets[source]

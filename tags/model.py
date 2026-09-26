@@ -27,19 +27,31 @@ class TagModel(nn.Module):
         *,
         pretrained: bool = False,
         dropout: float = DEFAULT_DROPOUT,
+        extra_features: int = 0,
     ):
         super().__init__()
         self.backbone = timm.create_model(arch, pretrained=pretrained, num_classes=0)
+        # extra_features：头部附加的元数据特征维度（如分辨率/清晰度/压缩率——
+        # 原图尺寸在 448 预处理中被销毁，这是模型"看见"源尺寸的唯一通道）
+        self.extra_features = int(extra_features)
         self.head = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(self.backbone.num_features, num_tags),
+            nn.Linear(self.backbone.num_features + self.extra_features, num_tags),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.head(self.backbone(x))
+    def forward(self, x: torch.Tensor, extra: torch.Tensor | None = None) -> torch.Tensor:
+        """图像前向；extra_features>0 时必须显式传入元数据特征（无法从像素推出）。"""
+        feat = self.backbone(x)
+        if self.extra_features:
+            if extra is None:
+                raise ValueError(
+                    "模型含元数据特征（extra_features>0），forward 需传入 extra 张量（元数据特征）"
+                )
+            feat = torch.cat([feat, extra], dim=-1)
+        return self.head(feat)
 
     @torch.no_grad()
-    def mc_forward(self, x: torch.Tensor, n_mc: int) -> torch.Tensor:
+    def mc_forward(self, x: torch.Tensor, n_mc: int, extra: torch.Tensor | None = None) -> torch.Tensor:
         """MC dropout 采样：仅激活 Dropout 模块的 n_mc 次前向。
 
         不整体切 train()，避免 BatchNorm 骨干的运行统计被污染。
@@ -50,7 +62,7 @@ class TagModel(nn.Module):
             if isinstance(m, nn.Dropout):
                 m.train(True)
         try:
-            samples = torch.stack([torch.sigmoid(self(x)) for _ in range(n_mc)])
+            samples = torch.stack([torch.sigmoid(self(x, extra)) for _ in range(n_mc)])
         finally:
             for m in self.modules():
                 if isinstance(m, nn.Dropout):
