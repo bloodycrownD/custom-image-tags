@@ -15,7 +15,9 @@
 - 数据目录只读，所有产物写入 classify 仓库 data/ 下；例外：经用户指令把整个作者文件夹从 classification 图库移入 new/（主动学习循环的取材入口，2026-09-21 起沿用）。
 - 人工标注用 TagSpaces：标签写在文件名结尾的方括号组，多标签默认为单组内空格分隔（`2398_..._p0[无背景 一般].png`，逗号亦接受），无 sidecar 文件；训练数据用 tools/scan_tagspaces.py 扫描生成 labels.json，词表见 tags/vocab.py。
 - 负面标签分大小（2026-09-21 确立）：大负面（官方图/大水印）**独占**——出现时不再标任何小负面；小负面（无背景/漫画图/NSFW/小水印/低像素/男角色）之间可组合。权威定义见 tags/vocab.py 的 BIG_NEGATIVE_TAGS。
-- 打分输出协议以 checkpoint meta 为准（percentiles / u_threshold 等），工具读取而非重算。
+- 主动学习循环（2026-09 起沿用）：classification 取作者文件夹 → new/<作者>/ → 预填打标（`python tags_predict.py --data-root <目录> --apply`）→ TagSpaces 人工修正 → 挪入 finish → 重扫 labels.json（tools/scan_tagspaces.py）→ 重训（缓存键含路径清单，作者并入必触发特征全量重提）。**喜好 prefill 一律模型预估**（2026-09-21~25 三轮拍板定稿；目录映射 good/keep/trash 语义是作者内相对排序，仅 `--pref-source dir` 显式启用）。
+- 元数据特征通道（分辨率/清晰度/压缩率接入头部）默认关闭（2026-09-25 受控实验证无收益，`use_meta_features` 开关保留）；**低像素维持人工标注**（模型折外 AUC≈瞎猜、可计算上限仅 AUC 0.75）。
+- 打分输出协议以 checkpoint meta 为准（percentiles / u_threshold / tag_thresholds 频次匹配校准阈值等），工具读取而非重算。
 - tag 预处理对齐基模官方管线（WD：alpha 白底合成、白色 pad-to-square、bicubic、448px、mean/std 0.5）；rank 的黑填充 + ImageNet 归一化仅服务于 EfficientNet-B4，两套互不通用。
 - 训练环境：~/miniconda3/envs/classify（torch cu13 + timm）。网络：PyPI 走清华镜像直连，HuggingFace 走 clash 代理 127.0.0.1:7890（直连被墙）。
 - 预训练基模权重放 data/pretrained/（gitignore），不进版本库。
